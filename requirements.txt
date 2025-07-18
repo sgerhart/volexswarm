@@ -1,0 +1,13 @@
+fastapi
+uvicorn
+pandas
+numpy
+ta
+ccxt
+aiohttp
+scikit-learn
+matplotlib
+sqlalchemy
+asyncpg
+hvac
+python-dotenv

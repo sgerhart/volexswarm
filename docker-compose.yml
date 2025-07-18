@@ -1,0 +1,50 @@
+version: "3.8"
+services:
+  research:
+    build:
+      context: .
+      dockerfile: docker/research.Dockerfile
+    ports:
+      - "810:8000"
+    env_file: .env
+
+  strategy:
+    build:
+      context: .
+      dockerfile: docker/strategy.Dockerfile
+    ports:
+      - "810:8000"
+    env_file: .env
+
+  backtest:
+    build:
+      context: .
+      dockerfile: docker/backtest.Dockerfile
+    ports:
+      - "810:8000"
+    env_file: .env
+
+  execute:
+    build:
+      context: .
+      dockerfile: docker/execute.Dockerfile
+    ports:
+      - "810:8000"
+    env_file: .env
+
+  monitor:
+    build:
+      context: .
+      dockerfile: docker/monitor.Dockerfile
+    ports:
+      - "810:8000"
+    env_file: .env
+
+  optimize:
+    build:
+      context: .
+      dockerfile: docker/optimize.Dockerfile
+    ports:
+      - "810:8000"
+    env_file: .env
+
