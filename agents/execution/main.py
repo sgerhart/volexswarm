@@ -339,6 +339,16 @@ async def startup_event():
         
         # Load agent configuration
         config = get_agent_config("execution")
+        if config is None:
+            # Fallback configuration if not found in Vault
+            config = {
+                "dry_run_mode": True,
+                "default_exchange": "binanceus",
+                "max_order_size": 100.0,
+                "risk_limit": 0.02
+            }
+            logger.warning("No configuration found in Vault, using fallback configuration")
+        
         dry_run_mode = config.get("dry_run_mode", True)
         logger.info(f"Execution agent started in {'DRY RUN' if dry_run_mode else 'LIVE'} mode")
         
