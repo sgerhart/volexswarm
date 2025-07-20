@@ -9,5 +9,15 @@ scikit-learn
 matplotlib
 sqlalchemy
 asyncpg
+psycopg2-binary
 hvac
 python-dotenv
+redis
+kafka-python
+openai
+tiktoken
+pydantic
+beautifulsoup4
+lxml
+requests
+feedparser

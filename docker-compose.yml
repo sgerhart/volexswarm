@@ -1,50 +1,121 @@
 version: "3.8"
+
 services:
+  vault:
+    image: hashicorp/vault:latest
+    container_name: volexswarm-vault
+    ports:
+      - "8200:8200"
+    environment:
+      VAULT_DEV_ROOT_TOKEN_ID: root
+      VAULT_DEV_LISTEN_ADDRESS: 0.0.0.0:8200
+    cap_add:
+      - IPC_LOCK
+    volumes:
+      - vault_data:/vault/data
+
+    restart: unless-stopped
+
+  db:
+    image: timescale/timescaledb:latest-pg14
+    container_name: volexstorm-db
+    environment:
+      POSTGRES_USER: volex
+      POSTGRES_PASSWORD: volex_pass
+      POSTGRES_DB: volextrades
+    ports:
+      - "5432:5432"
+    volumes:
+      - db_data:/var/lib/postgresql/data
+    restart: unless-stopped
+
   research:
     build:
       context: .
       dockerfile: docker/research.Dockerfile
     ports:
-      - "810:8000"
-    env_file: .env
+      - "8001:8000"
+    environment:
+      - VAULT_ADDR=http://vault:8200
+      - VAULT_TOKEN=root
+      - DB_HOST=db
+      - DB_PORT=5432
+      - DB_NAME=volextrades
+      - DB_USER=volex
+      - DB_PASSWORD=volex_pass
+    depends_on:
+      - vault
+      - db
+    volumes:
+      - ./logs/agents:/app/logs
+    restart: unless-stopped
 
-  strategy:
-    build:
-      context: .
-      dockerfile: docker/strategy.Dockerfile
-    ports:
-      - "810:8000"
-    env_file: .env
-
-  backtest:
-    build:
-      context: .
-      dockerfile: docker/backtest.Dockerfile
-    ports:
-      - "810:8000"
-    env_file: .env
-
-  execute:
+  execution:
     build:
       context: .
       dockerfile: docker/execute.Dockerfile
     ports:
-      - "810:8000"
-    env_file: .env
+      - "8002:8002"
+    environment:
+      - VAULT_ADDR=http://vault:8200
+      - VAULT_TOKEN=root
+      - DB_HOST=db
+      - DB_PORT=5432
+      - DB_NAME=volextrades
+      - DB_USER=volex
+      - DB_PASSWORD=volex_pass
+    depends_on:
+      - vault
+      - db
+    volumes:
+      - ./logs/agents:/app/logs
+    restart: unless-stopped
 
-  monitor:
+  signal:
     build:
       context: .
-      dockerfile: docker/monitor.Dockerfile
+      dockerfile: docker/signal.Dockerfile
     ports:
-      - "810:8000"
-    env_file: .env
+      - "8003:8003"
+    environment:
+      - VAULT_ADDR=http://vault:8200
+      - VAULT_TOKEN=root
+      - DB_HOST=db
+      - DB_PORT=5432
+      - DB_NAME=volextrades
+      - DB_USER=volex
+      - DB_PASSWORD=volex_pass
+    depends_on:
+      - vault
+      - db
+    volumes:
+      - ./logs/agents:/app/logs
+    restart: unless-stopped
 
-  optimize:
+  meta:
     build:
       context: .
-      dockerfile: docker/optimize.Dockerfile
+      dockerfile: docker/meta.Dockerfile
     ports:
-      - "810:8000"
-    env_file: .env
+      - "8004:8004"
+    environment:
+      - VAULT_ADDR=http://vault:8200
+      - VAULT_TOKEN=root
+      - DB_HOST=db
+      - DB_PORT=5432
+      - DB_NAME=volextrades
+      - DB_USER=volex
+      - DB_PASSWORD=volex_pass
+    depends_on:
+      - vault
+      - db
+      - research
+      - execution
+      - signal
+    volumes:
+      - ./logs/agents:/app/logs
+    restart: unless-stopped
 
+volumes:
+  vault_data:
+  db_data:

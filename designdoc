@@ -1,0 +1,116 @@
+Overview
+VolexSwarm is an autonomous, AI-driven crypto trading platform powered by modular agents. Each agent specializes in a specific trading domain — from research and signal generation to execution and compliance. The system is built for high-frequency, low-latency decision-making, continuous self-optimization, and fully autonomous operation, with a Meta-Agent coordinating workflows. Secure key management is handled by Vault, and real-time and historical data is managed in TimescaleDB.
+A human operator can optionally interact with the system via a Web UI or CLI to issue high-level commands (e.g., "Sell 100 ETH"), though all decision-making is fully automated by default.
+
+Objectives
+	•	Fully autonomous crypto trading with modular, cooperative AI agents
+	•	Natural language command interface via Meta-Agent
+	•	Backtest-before-live strategy pipeline with continuous self-optimization
+	•	Secure storage of secrets with Vault
+	•	Web UI for monitoring, performance visualization, and overrides
+
+Agent Roles
+Agent Name
+Responsibility
+Research
+Scrape market news, sentiment data, Reddit, Twitter, technical blogs
+Signal
+Generate trade signals using technical indicators and ML models
+Strategy
+Propose, refine, and backtest trade strategies
+Execution
+Execute trades securely through ccxt or native exchange APIs
+Risk Manager
+Enforce stop-loss, exposure limits, position sizing
+Compliance
+Audit and log decisions, enforce trading policy
+Backtest
+Run historical backtests across strategy configurations
+Optimize
+Tune hyperparameters, assess strategy performance
+Monitor
+Health-checks, trading anomalies, trade syncing
+Meta-Agent
+Coordinate agents, accept user commands, and manage decisions
+
+Technologies
+	•	Language: Python (Cursor IDE)
+	•	Agent Framework: CrewAI / AutoGen / LangGraph / custom async
+	•	Crypto Integration: ccxt (exchange SDK)
+	•	Secrets: HashiCorp Vault (KV v2), fully API-driven
+	•	Data Storage: PostgreSQL/TimescaleDB (trades, logs, backtests)
+	•	Agent Comms: Redis or Kafka (future)
+	•	UI: Streamlit (prototype) or Next.js (future full version)
+	•	Containerization: Docker + Docker Compose
+
+Folder Structure
+volexswarm/
+├── agents/
+│   ├── backtest/       # Backtest simulations
+│   ├── compliance/     # Logging and audit
+│   ├── execution/      # Trade execution logic
+│   ├── meta/           # Meta-agent orchestration
+│   ├── monitor/        # Health and agent heartbeat
+│   ├── optimize/       # Strategy tuning
+│   ├── research/       # Market intelligence
+│   ├── risk/           # Risk policy enforcement
+│   ├── signal/         # Indicator-based trade triggers
+│   └── strategy/       # Strategy generation + selection
+├── common/             # Shared modules (Vault, DB, utils)
+├── data/               # Raw, processed, backtest, strategy data
+├── docker/             # Dockerfiles per agent
+├── logs/               # Logs by agent or task
+├── scripts/            # Backup/restore and utilities
+├── webui/              # UI components
+├── docker-compose.yml  # Multi-agent container orchestration
+├── requirements.txt
+└── README.md
+
+System Architecture
+	•	Vault stores all secrets, accessed by agents via common/vault.py
+	•	TimescaleDB stores historical trade data, backtest results, logs
+	•	Agents are deployed in containers and coordinate via Meta-Agent
+	•	Meta-Agent accepts human commands and routes tasks to other agents
+	•	Web UI displays trading activity, strategy testing, and agent insights
+	•	Backup/Restore scripts manage Vault snapshots and Timescale data
+
+MVP Plan
+Phase
+Goal
+✅ Phase 1
+Core folder structure, Vault & DB containers, test backups
+🔄 Phase 2
+Implement common/vault.py, common/db.py, test access
+🔜 Phase 3
+Execution agent (ccxt integration, test orders, dry run)
+🔜 Phase 4
+Signal agent (TA/ML signals using live or cached data)
+🔜 Phase 5
+Backtesting agent with metrics export to DB and logs
+🔜 Phase 6
+Meta-agent + natural language interface (CLI or HTTP)
+🔜 Phase 7
+Web UI with dashboard, performance, command input
+
+Web UI Capabilities
+	•	Strategy visualizations (PnL, sharpe, win rate)
+	•	Real-time portfolio, trade log, open orders
+	•	Logs and audit trail by agent
+	•	Chat box or command form to talk to Meta-Agent
+	•	Kill switch / emergency override
+
+Security
+	•	All API keys and DB credentials in Vault
+	•	No secrets in .env or plain text
+	•	Manual confirmation flow for large trades
+	•	Read-only and withdrawal-protected API keys
+
+Interaction Example
+[You] > "Sell 100 ETH"
+[Meta-Agent] Validating signal… confirming exposure…
+[Risk Agent] ✅ Limit within bounds
+[Execution Agent] 🟢 Order sent to Binance
+[Compliance] 📜 Logged 100 ETH SELL at $3,450
+
+
+
