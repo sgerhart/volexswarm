@@ -116,6 +116,25 @@ services:
       - ./logs/agents:/app/logs
     restart: unless-stopped
 
+  webui:
+    build:
+      context: ./webui
+      dockerfile: Dockerfile
+    ports:
+      - "8005:8005"
+    environment:
+      - VAULT_ADDR=http://vault:8200
+      - VAULT_TOKEN=root
+    depends_on:
+      - vault
+      - research
+      - execution
+      - signal
+      - meta
+    volumes:
+      - ./logs/webui:/app/logs
+    restart: unless-stopped
+
 volumes:
   vault_data:
   db_data:
