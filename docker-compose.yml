@@ -118,7 +118,7 @@ services:
 
   webui:
     build:
-      context: ./webui
+      context: ./webui/simple
       dockerfile: Dockerfile
     ports:
       - "8005:8005"
