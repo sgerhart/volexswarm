@@ -98,6 +98,16 @@ Scripts for testing various components and functionality of the system.
   - GPT API connectivity
   - Natural language processing
   - Market analysis generation
+
+#### `test_encryption.py`
+- **Purpose**: Test Vault backup encryption functionality
+- **What it tests**:
+  - AES-256-GCM encryption/decryption
+  - Field-level sensitive data encryption
+  - Backup file format compatibility
+  - Security verification
+- **Usage**: `python scripts/test_encryption.py`
+- **Prerequisites**: cryptography library installed
   - Sentiment analysis
   - AI-powered insights
 - **Usage**: `python scripts/test_gpt_integration.py`
@@ -149,23 +159,47 @@ Scripts for managing and populating data in the system.
 Scripts for backing up and restoring system data.
 
 #### `backup.py`
-- **Purpose**: Backup all Vault secrets to JSON file
+- **Purpose**: Create encrypted backups of Vault secrets
 - **What it does**:
-  - Recursively fetches all KV secrets
-  - Creates timestamped backup files
-  - Stores in `backup/` directory
-  - Handles nested secret structures
-- **Usage**: `python scripts/backup.py`
+  - Recursively fetches all KV secrets from Vault
+  - **Encrypts sensitive fields** (API keys, passwords, tokens) using AES-256-GCM
+  - Uses PBKDF2 key derivation for security
+  - Creates timestamped backup files with metadata
+  - Supports both encrypted and unencrypted backups
+- **Usage**: 
+  - `python scripts/backup.py` (encrypted backup - prompts for master key)
+  - `python scripts/backup.py --master-key "your_key"` (encrypted backup with provided key)
+  - `python scripts/backup.py --no-encrypt` (unencrypted backup)
+- **Security**: Prompts for master key once to encrypt all sensitive data
 - **Output**: `backup/vault_kv_backup_YYYYMMDD_HHMMSS.json`
 
 #### `restore.py`
-- **Purpose**: Restore Vault secrets from backup file
+- **Purpose**: Restore Vault secrets from encrypted backup files
 - **What it does**:
-  - Reads backup JSON file
-  - Restores secrets to Vault
-  - Validates restoration
-  - Handles nested structures
-- **Usage**: `python scripts/restore.py <backup_file>`
+  - Loads backup files with metadata
+  - **Decrypts sensitive data** using master key
+  - Supports both new (encrypted) and legacy backup formats
+  - Restores secrets to Vault with error handling
+  - Lists available backup files
+- **Usage**:
+  - `python scripts/restore.py <backup_file>` (restore specific backup)
+  - `python scripts/restore.py --list` (list available backups)
+  - `python scripts/restore.py <backup_file> --master-key <key>` (provide key directly)
+- **Security**: Prompts for master key if not provided
+- **Compatibility**: Works with both encrypted and legacy backup formats
+
+#### `crypto_utils.py`
+- **Purpose**: Cryptographic utilities for backup encryption/decryption
+- **What it provides**:
+  - `VaultBackupCrypto` class for AES-256-GCM encryption
+  - Field-level encryption for sensitive data
+  - PBKDF2 key derivation for security
+  - Backup format compatibility
+- **Security Features**:
+  - AES-256-GCM authenticated encryption
+  - 100,000 PBKDF2 iterations
+  - Random nonce generation
+  - Automatic sensitive field detection
 
 #### `backup.sh`
 - **Purpose**: Shell script wrapper for backup operations

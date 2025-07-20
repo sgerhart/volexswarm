@@ -21,3 +21,4 @@ beautifulsoup4
 lxml
 requests
 feedparser
+cryptography

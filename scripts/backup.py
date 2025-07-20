@@ -3,6 +3,7 @@ import hvac
 import json
 import os
 from datetime import datetime
+from crypto_utils import encrypt_sensitive_fields, VaultBackupCrypto
 
 # Vault Configuration
 VAULT_ADDR = os.getenv("VAULT_ADDR", "http://127.0.0.1:8200")
@@ -42,7 +43,14 @@ def get_all_kv_secrets(client, mount_point, path=""):
 
     return kv_data
 
-def backup_vault():
+def backup_vault(encrypt_sensitive=True, master_key=None):
+    """
+    Backup Vault secrets with optional encryption of sensitive data.
+    
+    Args:
+        encrypt_sensitive: If True, encrypt sensitive fields like API keys
+        master_key: Optional master key (will prompt if not provided and encryption enabled)
+    """
     client = hvac.Client(url=VAULT_ADDR, token=VAULT_TOKEN)
 
     if not client.is_authenticated():
@@ -52,12 +60,47 @@ def backup_vault():
     print("🔐 Fetching secrets from Vault...")
     secrets = get_all_kv_secrets(client, KV_MOUNT_PATH)
 
+    if encrypt_sensitive:
+        print("🔒 Encrypting sensitive data...")
+        try:
+            # Create a single crypto instance to avoid multiple prompts
+            crypto = VaultBackupCrypto(master_key)
+            secrets = encrypt_sensitive_fields(secrets, crypto_instance=crypto)
+            print("✅ Sensitive data encrypted successfully")
+        except Exception as e:
+            print(f"⚠️  Warning: Failed to encrypt sensitive data: {e}")
+            print("   Proceeding with unencrypted backup...")
+    
+    # Add backup metadata
+    backup_data = {
+        "metadata": {
+            "timestamp": datetime.now().isoformat(),
+            "vault_addr": VAULT_ADDR,
+            "encrypted": encrypt_sensitive,
+            "version": "2.0",
+            "description": "VolexSwarm Vault backup with encrypted sensitive data"
+        },
+        "secrets": secrets
+    }
+
     print(f"💾 Saving backup to {BACKUP_FILE}...")
     os.makedirs(os.path.dirname(BACKUP_FILE), exist_ok=True)
     with open(BACKUP_FILE, "w") as f:
-        json.dump(secrets, f, indent=4)
+        json.dump(backup_data, f, indent=4)
 
     print("✅ Vault KV backup completed!")
+    if encrypt_sensitive:
+        print("🔐 Backup contains encrypted sensitive data")
+        print("   Store your master key securely - you'll need it to restore!")
 
 if __name__ == "__main__":
-    backup_vault()
+    import argparse
+    
+    parser = argparse.ArgumentParser(description="Backup Vault secrets with encryption")
+    parser.add_argument("--no-encrypt", action="store_true", 
+                       help="Skip encryption of sensitive data (not recommended)")
+    parser.add_argument("--master-key", help="Master key for encryption (will prompt if not provided)")
+    
+    args = parser.parse_args()
+    
+    backup_vault(encrypt_sensitive=not args.no_encrypt, master_key=args.master_key)
