@@ -38,10 +38,10 @@ app.add_middleware(
 
 # Agent endpoints
 AGENT_ENDPOINTS = {
-    "research": "http://localhost:8001",
-    "signal": "http://localhost:8003", 
-    "execution": "http://localhost:8002",
-    "meta": "http://localhost:8004"
+    "research": "http://research:8000",
+    "signal": "http://signal:8003", 
+    "execution": "http://execution:8002",
+    "meta": "http://meta:8004"
 }
 
 # Data models

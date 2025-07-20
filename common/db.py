@@ -71,6 +71,11 @@ class DatabaseClient:
         username = os.getenv('DB_USER', 'volex')
         password = os.getenv('DB_PASSWORD', 'volex_pass')
         
+        # Force host to be 'db' for Docker containers
+        if host == 'localhost' or host == '127.0.0.1':
+            host = 'db'
+            logger.warning(f"Detected localhost in DB_HOST, forcing to 'db' for Docker environment")
+        
         return f"postgresql://{username}:{password}@{host}:{port}/{database}"
     
     def _initialize_connection(self) -> None:
