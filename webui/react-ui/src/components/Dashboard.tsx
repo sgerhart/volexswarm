@@ -31,6 +31,10 @@ import AgentStatus from './AgentStatus';
 import SystemMetrics from './SystemMetrics';
 import TradingOverview from './TradingOverview';
 import AgentLogs from './AgentLogs';
+import AgentManagement from './AgentManagement';
+import TradingInterface from './TradingInterface';
+import StrategyManagement from './StrategyManagement';
+import SystemMonitoring from './SystemMonitoring';
 
 const Dashboard: React.FC = () => {
   const [drawerOpen, setDrawerOpen] = useState(false);
@@ -44,9 +48,11 @@ const Dashboard: React.FC = () => {
 
   const menuItems = [
     { text: 'Dashboard', icon: <DashboardIcon />, component: 'dashboard' },
+    { text: 'Agent Management', icon: <SettingsIcon />, component: 'agents' },
     { text: 'Trading', icon: <TradingIcon />, component: 'trading' },
+    { text: 'Strategy Management', icon: <AiIcon />, component: 'strategy' },
+    { text: 'System Monitoring', icon: <ChartIcon />, component: 'monitoring' },
     { text: 'Analytics', icon: <ChartIcon />, component: 'analytics' },
-    { text: 'AI Research', icon: <AiIcon />, component: 'research' },
     { text: 'Settings', icon: <SettingsIcon />, component: 'settings' },
   ];
 
@@ -74,17 +80,14 @@ const Dashboard: React.FC = () => {
             </Box>
           </Box>
         );
+      case 'agents':
+        return <AgentManagement />;
       case 'trading':
-        return (
-          <Box>
-            <Typography variant="h4" gutterBottom sx={{ color: 'primary.main' }}>
-              Trading Interface
-            </Typography>
-            <Typography variant="body1" color="text.secondary">
-              Advanced trading interface coming soon...
-            </Typography>
-          </Box>
-        );
+        return <TradingInterface />;
+      case 'strategy':
+        return <StrategyManagement />;
+      case 'monitoring':
+        return <SystemMonitoring />;
       case 'analytics':
         return (
           <Box>
@@ -93,17 +96,6 @@ const Dashboard: React.FC = () => {
             </Typography>
             <Typography variant="body1" color="text.secondary">
               Performance analytics and charts coming soon...
-            </Typography>
-          </Box>
-        );
-      case 'research':
-        return (
-          <Box>
-            <Typography variant="h4" gutterBottom sx={{ color: 'primary.main' }}>
-              AI Research
-            </Typography>
-            <Typography variant="body1" color="text.secondary">
-              AI-powered market research and insights coming soon...
             </Typography>
           </Box>
         );
