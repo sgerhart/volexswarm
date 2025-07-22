@@ -2,6 +2,11 @@ FROM python:3.11-slim
 
 WORKDIR /app
 
+# Install system dependencies including curl for health checks
+RUN apt-get update && apt-get install -y \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
 # Copy requirements first for better caching
 COPY requirements.txt /app/
 
@@ -11,6 +16,10 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copy agent code
 COPY ./agents/execution /app/
 COPY ./common /app/common/
+
+# Set environment variables
+ENV PYTHONPATH=/app
+ENV PYTHONUNBUFFERED=1
 
 # Create non-root user for security
 RUN useradd -m -u 1000 execution && chown -R execution:execution /app

@@ -384,9 +384,9 @@ class WebSocketService {
 // Create singleton instance
 export const webSocketService = new WebSocketService();
 
-// Auto-connect when service is imported
-webSocketService.connect().catch(error => {
-  console.warn('Initial WebSocket connection failed:', error);
-});
+// Manual connection - no auto-connect
+// webSocketService.connect().catch(error => {
+//   console.warn('Initial WebSocket connection failed:', error);
+// });
 
 export default webSocketService; 

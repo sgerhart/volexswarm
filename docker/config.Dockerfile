@@ -3,27 +3,27 @@ FROM python:3.11-slim
 # Set working directory
 WORKDIR /app
 
-# Install system dependencies
+# Install system dependencies including curl for health checks
 RUN apt-get update && apt-get install -y \
-    gcc \
-    g++ \
     curl \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy requirements
+# Copy requirements first for better caching
 COPY requirements.txt /app/
 
-# Install Python dependencies
+# Install dependencies
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy agent code
 COPY ./agents/config /app/
 COPY ./common /app/common/
 
-# Create user for security
-RUN useradd -m -u 1000 config && chown -R config:config /app
+# Set environment variables
+ENV PYTHONPATH=/app
+ENV PYTHONUNBUFFERED=1
 
-# Switch to non-root user
+# Create non-root user for security
+RUN useradd -m -u 1000 config && chown -R config:config /app
 USER config
 
 # Expose port

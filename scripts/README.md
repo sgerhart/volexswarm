@@ -16,7 +16,9 @@ This directory contains organized scripts for managing the VolexSwarm trading sy
 - **`init_openai.py`** - Initialize OpenAI configuration
 - **`init_signal_agent.py`** - Initialize signal agent
 - **`init_meta_agent.py`** - Initialize meta agent
-- **`init_vault.py`** - Initialize Vault secrets
+- **`init_vault.py`** - Initialize Vault secrets (development mode)
+- **`init_vault_production.py`** - Initialize Vault in production mode with persistence
+- **`add_api_keys.py`** - Add or update API keys in Vault
 
 ### `data/` - Data Management Scripts
 - **`add_historical_data.py`** - Add historical market data
@@ -37,17 +39,29 @@ This directory contains organized scripts for managing the VolexSwarm trading sy
 - **`crypto_utils.py`** - Cryptographic utilities
 
 ### `legacy/` - Legacy Scripts (Deprecated)
-- Old backup/restore scripts
-- Deprecated functionality
-- Migration scripts
+- **`migrate_secrets.py`** - Migrate Vault secrets from old structure
+- **`demo_autonomous_system.py`** - Demonstration of autonomous trading system
 
 ## 🔐 Vault Management
+
+### Production Setup (Recommended)
+For production deployments with full persistence:
+```bash
+# Configure Vault for production mode (already done in docker-compose.yml)
+pyenv activate volexswarm-env
+python scripts/setup/init_vault_production.py
+```
 
 ### Creating a Backup
 ```bash
 pyenv activate volexswarm-env
 python scripts/database/backup_vault.py
 ```
+
+### Data Persistence
+- **Database**: Automatic persistence via Docker volume `db_data:/var/lib/postgresql/data`
+- **Vault**: Production mode with file storage backend to `vault_data:/vault/data`
+- Both systems maintain data across container restarts
 
 ### Viewing Backup Contents
 ```bash

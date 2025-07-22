@@ -25,16 +25,41 @@ from common.vault import get_vault_client, get_agent_config
 from common.db import get_db_client, health_check as db_health_check
 from common.logging import get_logger
 from common.models import Strategy, Trade, PerformanceMetrics
+from common.websocket_client import AgentWebSocketClient, MessageType
 
 # Initialize structured logger
 logger = get_logger("strategy")
 
 from contextlib import asynccontextmanager
 
+async def health_monitor_loop():
+    """Background task to send periodic health updates to Meta Agent."""
+    while True:
+        try:
+            if ws_client and ws_client.is_connected:
+                # Gather health metrics
+                health_data = {
+                    "status": "healthy",
+                    "db_connected": db_client is not None,
+                    "vault_connected": vault_client is not None,
+                    "last_health_check": datetime.utcnow().isoformat()
+                }
+                
+                await ws_client.send_health_update(health_data)
+                logger.debug("Sent health update to Meta Agent")
+            
+            # Wait 30 seconds before next health update
+            await asyncio.sleep(30)
+            
+        except Exception as e:
+            logger.error(f"Health monitor error: {e}")
+            await asyncio.sleep(30)  # Continue monitoring even if there's an error
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Lifespan event handler for startup and shutdown."""
-    global vault_client, db_client
+    global vault_client, db_client, ws_client
     
     # Startup
     try:
@@ -50,6 +75,19 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.warning(f"Failed to initialize database client: {e}")
         db_client = None
+    
+    try:
+        # Initialize WebSocket client for real-time communication
+        ws_client = AgentWebSocketClient("strategy")
+        await ws_client.connect()
+        logger.info("WebSocket client connected to Meta Agent")
+        
+        # Start health monitoring background task
+        asyncio.create_task(health_monitor_loop())
+        
+    except Exception as e:
+        logger.warning(f"Failed to initialize WebSocket client: {e}")
+        ws_client = None
     
     if vault_client or db_client:
         logger.info("Strategy Agent initialized with available services")
@@ -75,6 +113,7 @@ app.add_middleware(
 # Global clients
 vault_client = None
 db_client = None
+ws_client = None  # WebSocket client for real-time communication
 
 # Strategy status enum
 class StrategyStatus(str, Enum):

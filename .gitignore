@@ -118,6 +118,8 @@ dmypy.json
 
 # Vault data (if stored locally)
 vault-data/
+vault_init.json
+*.token
 
 # TimescaleDB data
 postgres-data/

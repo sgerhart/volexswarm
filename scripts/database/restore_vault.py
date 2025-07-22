@@ -73,10 +73,32 @@ class VaultBackupCrypto:
             print(f"Warning: Failed to decrypt field, returning as-is: {e}")
             return encrypted_data
 
+def get_vault_token() -> str:
+    """Get the vault root token from initialization file or environment."""
+    # Try to read from vault initialization file first
+    vault_init_file = Path("vault_init.json")
+    if vault_init_file.exists():
+        try:
+            with open(vault_init_file, 'r') as f:
+                vault_data = json.load(f)
+                return vault_data.get("root_token")
+        except Exception as e:
+            print(f"⚠️  Warning: Could not read vault_init.json: {e}")
+    
+    # Fallback to environment variable
+    token = os.getenv("VAULT_TOKEN")
+    if token:
+        return token
+    
+    # Last resort - try development mode token
+    print("⚠️  Warning: Using development mode token as fallback")
+    return "root"
+
 def run_vault_command(command: str) -> str:
     """Run a Vault CLI command."""
     try:
-        full_command = f"docker exec -e VAULT_ADDR=http://127.0.0.1:8200 -e VAULT_TOKEN=root volexswarm-vault vault {command}"
+        vault_token = get_vault_token()
+        full_command = f"docker exec -e VAULT_ADDR=http://127.0.0.1:8200 -e VAULT_TOKEN={vault_token} volexswarm-vault vault {command}"
         result = subprocess.run(
             full_command,
             shell=True,

@@ -25,6 +25,7 @@ from common.vault import get_vault_client, get_exchange_credentials, get_agent_c
 from common.db import get_db_client, health_check as db_health_check
 from common.logging import get_logger
 from common.models import Trade, Order
+from common.websocket_client import AgentWebSocketClient, MessageType
 
 # Initialize structured logger
 logger = get_logger("execution")
@@ -43,6 +44,7 @@ app.add_middleware(
 # Global clients
 vault_client = None
 db_client = None
+ws_client = None  # WebSocket client for real-time communication
 exchanges = {}  # Exchange instances
 dry_run_mode = True  # Default to dry run for safety
 
@@ -323,10 +325,36 @@ class ExchangeManager:
 exchange_manager = ExchangeManager()
 
 
+async def health_monitor_loop():
+    """Background task to send periodic health updates to Meta Agent."""
+    while True:
+        try:
+            if ws_client and ws_client.is_connected:
+                # Gather health metrics
+                health_data = {
+                    "status": "healthy",
+                    "dry_run_mode": dry_run_mode,
+                    "db_connected": db_client is not None,
+                    "vault_connected": vault_client is not None,
+                    "exchange_count": len(exchanges),
+                    "last_health_check": datetime.utcnow().isoformat()
+                }
+                
+                await ws_client.send_health_update(health_data)
+                logger.debug("Sent health update to Meta Agent")
+            
+            # Wait 30 seconds before next health update
+            await asyncio.sleep(30)
+            
+        except Exception as e:
+            logger.error(f"Health monitor error: {e}")
+            await asyncio.sleep(30)  # Continue monitoring even if there's an error
+
+
 @app.on_event("startup")
 async def startup_event():
     """Initialize the execution agent on startup."""
-    global vault_client, db_client, dry_run_mode
+    global vault_client, db_client, ws_client, dry_run_mode
     
     try:
         # Initialize Vault client
@@ -336,6 +364,11 @@ async def startup_event():
         # Initialize database client
         db_client = get_db_client()
         logger.info("Database client initialized")
+        
+        # Initialize WebSocket client for real-time communication
+        ws_client = AgentWebSocketClient("execution")
+        await ws_client.connect()
+        logger.info("WebSocket client connected to Meta Agent")
         
         # Load agent configuration
         config = get_agent_config("execution")
@@ -355,6 +388,9 @@ async def startup_event():
         # Initialize exchanges
         await exchange_manager.initialize_exchanges()
         logger.info("Exchange connections initialized")
+        
+        # Start health monitoring background task
+        asyncio.create_task(health_monitor_loop())
         
     except Exception as e:
         logger.error(f"Failed to initialize execution agent: {str(e)}")
@@ -462,6 +498,24 @@ async def place_order(order_request: OrderRequest):
             db_client.commit()
         except Exception as e:
             logger.error(f"Failed to store order/trade in database: {str(e)}")
+    
+    # Broadcast trade update via WebSocket
+    if ws_client and ws_client.is_connected:
+        trade_data = {
+            "order_id": order_result['id'],
+            "symbol": order_result['symbol'],
+            "side": order_result['side'],
+            "quantity": order_result['amount'],
+            "price": order_result['price'],
+            "status": order_result['status'],
+            "filled": order_result['filled'],
+            "cost": order_result['cost'],
+            "timestamp": order_result['timestamp'],
+            "exchange": order_request.exchange,
+            "dry_run": dry_run_mode
+        }
+        asyncio.create_task(ws_client.send_trade_update(trade_data))
+        logger.debug(f"Broadcasted trade update for {order_result['symbol']} via WebSocket")
     
     return order_result
 

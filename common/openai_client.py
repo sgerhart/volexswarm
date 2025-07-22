@@ -11,6 +11,7 @@ import openai
 from openai import OpenAI
 import tiktoken
 import json
+import asyncio
 
 from .vault import get_vault_client
 from .logging import get_logger
@@ -32,7 +33,7 @@ class VolexSwarmOpenAIClient:
         """Initialize OpenAI client with API key from Vault."""
         try:
             vault_client = get_vault_client()
-            openai_config = vault_client.get_secret("api_keys/openai")
+            openai_config = vault_client.get_secret("openai/api_key")
             
             if not openai_config or not openai_config.get("api_key"):
                 logger.warning("OpenAI API key not found in Vault")
@@ -61,29 +62,44 @@ class VolexSwarmOpenAIClient:
     def count_tokens(self, text: str) -> int:
         """Count tokens in text."""
         if not self.encoding:
-            return len(text.split())  # Rough estimate
-        return len(self.encoding.encode(text))
+            # Rough estimate: 1 token ≈ 4 characters
+            return len(text) // 4
+        
+        try:
+            return len(self.encoding.encode(text))
+        except Exception:
+            return len(text) // 4
     
-    def generate_market_commentary(self, 
-                                 symbol: str, 
-                                 price_data: Dict[str, Any],
-                                 technical_indicators: Dict[str, Any],
-                                 market_context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-        """
-        Generate market commentary using GPT.
+    async def generate_completion(self, messages: List[Dict[str, str]], max_tokens: Optional[int] = None, temperature: Optional[float] = None) -> str:
+        """Generate async completion for conversational AI."""
+        if not self.client:
+            raise Exception("OpenAI client not initialized")
         
-        Args:
-            symbol: Trading symbol (e.g., 'BTCUSD')
-            price_data: Current price and volume data
-            technical_indicators: Technical analysis indicators
-            market_context: Additional market context (optional)
-        
-        Returns:
-            Dict containing commentary and insights
-        """
-        if not self.is_available():
+        try:
+            # Run the synchronous call in a thread pool to make it async
+            loop = asyncio.get_event_loop()
+            response = await loop.run_in_executor(
+                None,
+                lambda: self.client.chat.completions.create(
+                    model=self.model,
+                    messages=messages,
+                    max_tokens=max_tokens or self.max_tokens,
+                    temperature=temperature or self.temperature
+                )
+            )
+            
+            return response.choices[0].message.content
+            
+        except Exception as e:
+            logger.error(f"Failed to generate completion: {e}")
+            raise Exception(f"OpenAI completion failed: {str(e)}")
+    
+    def generate_market_commentary(self, market_info: Dict[str, Any]) -> Dict[str, Any]:
+        """Generate market commentary using GPT."""
+        if not self.client:
+            logger.warning("OpenAI client not available")
             return {
-                "commentary": "OpenAI integration not available",
+                "commentary": "OpenAI client not available for market commentary",
                 "insights": [],
                 "sentiment": "neutral",
                 "confidence": 0.0,
@@ -91,15 +107,18 @@ class VolexSwarmOpenAIClient:
             }
         
         try:
-            # Prepare market data for GPT
-            market_info = {
-                "symbol": symbol,
-                "current_price": price_data.get("close", 0),
-                "price_change_24h": price_data.get("change_24h", 0),
-                "volume_24h": price_data.get("volume", 0),
-                "technical_indicators": technical_indicators,
-                "market_context": market_context or {}
-            }
+            # Validate required fields
+            required_fields = ['symbol', 'current_price', 'price_change_24h', 'volume_24h']
+            for field in required_fields:
+                if field not in market_info:
+                    logger.warning(f"Missing required field for market commentary: {field}")
+                    return {
+                        "commentary": f"Missing required market data: {field}",
+                        "insights": [],
+                        "sentiment": "neutral",
+                        "confidence": 0.0,
+                        "timestamp": datetime.now().isoformat()
+                    }
             
             # Create prompt for market commentary
             prompt = self._create_market_commentary_prompt(market_info)
@@ -109,7 +128,7 @@ class VolexSwarmOpenAIClient:
                 model=self.model,
                 messages=[
                     {
-                        "role": "system",
+                        "role": "system", 
                         "content": self._get_market_analyst_system_prompt()
                     },
                     {
@@ -126,7 +145,7 @@ class VolexSwarmOpenAIClient:
             # Parse and structure the response
             structured_response = self._parse_market_commentary(commentary_text, market_info)
             
-            logger.info(f"Generated market commentary for {symbol}")
+            logger.info(f"Generated market commentary for {market_info['symbol']}")
             return structured_response
             
         except Exception as e:
@@ -139,44 +158,31 @@ class VolexSwarmOpenAIClient:
                 "timestamp": datetime.now().isoformat()
             }
     
-    def analyze_trading_decision(self,
-                               symbol: str,
-                               proposed_action: str,
-                               signal_data: Dict[str, Any],
-                               market_data: Dict[str, Any],
-                               risk_parameters: Dict[str, Any]) -> Dict[str, Any]:
-        """
-        Analyze trading decision using GPT for advanced reasoning.
-        
-        Args:
-            symbol: Trading symbol
-            proposed_action: Proposed action (buy/sell/hold)
-            signal_data: Signal generation data
-            market_data: Current market data
-            risk_parameters: Risk management parameters
-        
-        Returns:
-            Dict containing analysis and recommendations
-        """
-        if not self.is_available():
+    def analyze_trading_decision(self, decision_context: Dict[str, Any]) -> Dict[str, Any]:
+        """Analyze a trading decision using GPT."""
+        if not self.client:
+            logger.warning("OpenAI client not available")
             return {
-                "analysis": "OpenAI integration not available",
-                "recommendation": proposed_action,
-                "reasoning": "No advanced reasoning available",
-                "confidence": signal_data.get("confidence", 0.0),
-                "risk_assessment": "Unable to assess risk",
+                "recommendation": "hold",
+                "reasoning": "OpenAI client not available for decision analysis",
+                "confidence": 0.0,
+                "risk_assessment": "unknown",
                 "timestamp": datetime.now().isoformat()
             }
         
         try:
-            # Prepare decision context
-            decision_context = {
-                "symbol": symbol,
-                "proposed_action": proposed_action,
-                "signal_data": signal_data,
-                "market_data": market_data,
-                "risk_parameters": risk_parameters
-            }
+            # Validate required fields
+            required_fields = ['symbol', 'proposed_action', 'signal_data', 'market_data']
+            for field in required_fields:
+                if field not in decision_context:
+                    logger.warning(f"Missing required field for decision analysis: {field}")
+                    return {
+                        "recommendation": "hold",
+                        "reasoning": f"Missing required decision context: {field}",
+                        "confidence": 0.0,
+                        "risk_assessment": "unknown",
+                        "timestamp": datetime.now().isoformat()
+                    }
             
             # Create prompt for decision analysis
             prompt = self._create_decision_analysis_prompt(decision_context)
@@ -203,50 +209,44 @@ class VolexSwarmOpenAIClient:
             # Parse and structure the response
             structured_response = self._parse_decision_analysis(analysis_text, decision_context)
             
-            logger.info(f"Generated trading decision analysis for {symbol}")
+            logger.info(f"Analyzed trading decision for {decision_context['symbol']}")
             return structured_response
             
         except Exception as e:
             logger.error(f"Failed to analyze trading decision: {e}")
             return {
-                "analysis": f"Error analyzing decision: {str(e)}",
-                "recommendation": proposed_action,
-                "reasoning": "No reasoning available",
-                "confidence": signal_data.get("confidence", 0.0),
-                "risk_assessment": "Unable to assess risk",
+                "recommendation": "hold",
+                "reasoning": f"Error analyzing decision: {str(e)}",
+                "confidence": 0.0,
+                "risk_assessment": "unknown",
                 "timestamp": datetime.now().isoformat()
             }
     
-    def generate_strategy_insights(self,
-                                 strategy_name: str,
-                                 performance_data: Dict[str, Any],
-                                 market_conditions: Dict[str, Any]) -> Dict[str, Any]:
-        """
-        Generate strategy insights and optimization suggestions.
-        
-        Args:
-            strategy_name: Name of the trading strategy
-            performance_data: Historical performance metrics
-            market_conditions: Current market conditions
-        
-        Returns:
-            Dict containing insights and recommendations
-        """
-        if not self.is_available():
+    def generate_strategy_insights(self, strategy_context: Dict[str, Any]) -> Dict[str, Any]:
+        """Generate strategy insights using GPT."""
+        if not self.client:
+            logger.warning("OpenAI client not available")
             return {
-                "insights": "OpenAI integration not available",
+                "insights": "OpenAI client not available for strategy insights",
                 "recommendations": [],
                 "optimization_suggestions": [],
                 "timestamp": datetime.now().isoformat()
             }
         
         try:
-            # Prepare strategy context
-            strategy_context = {
-                "strategy_name": strategy_name,
-                "performance_data": performance_data,
-                "market_conditions": market_conditions
-            }
+            # Validate required fields
+            required_fields = ['strategy_name', 'performance_data']
+            for field in required_fields:
+                if field not in strategy_context:
+                    logger.warning(f"Missing required field for strategy insights: {field}")
+                    return {
+                        "insights": f"Missing required strategy context: {field}",
+                        "recommendations": [],
+                        "optimization_suggestions": [],
+                        "timestamp": datetime.now().isoformat()
+                    }
+            
+            strategy_name = strategy_context['strategy_name']
             
             # Create prompt for strategy analysis
             prompt = self._create_strategy_analysis_prompt(strategy_context)
@@ -348,148 +348,147 @@ Format your response for easy parsing.
         """Get system prompt for market analyst role."""
         return """You are an expert cryptocurrency market analyst with deep knowledge of technical analysis, market psychology, and trading dynamics. 
 
-Your role is to provide clear, actionable market commentary that helps traders understand current market conditions and make informed decisions.
+Your analysis should be:
+- Data-driven and objective
+- Clear and actionable
+- Risk-aware
+- Based on established trading principles
 
-Key principles:
-- Be objective and data-driven
-- Focus on actionable insights
-- Consider both technical and fundamental factors
-- Assess risk appropriately
-- Provide clear, structured analysis
-
-Always format your responses in a way that can be easily parsed by trading systems."""
+Focus on providing insights that help traders make informed decisions while managing risk effectively."""
     
     def _get_trading_analyst_system_prompt(self) -> str:
         """Get system prompt for trading analyst role."""
-        return """You are an expert trading analyst specializing in cryptocurrency markets. Your role is to evaluate trading decisions and provide advanced reasoning for trade execution.
+        return """You are an expert trading decision analyst specializing in cryptocurrency markets. 
 
-Key responsibilities:
-- Evaluate proposed trading actions
-- Assess risk-reward ratios
-- Consider market context and conditions
-- Provide clear reasoning for recommendations
-- Identify potential issues or concerns
+Your role is to:
+- Evaluate proposed trading actions objectively
+- Assess risk vs reward scenarios
+- Provide clear recommendations (confirm/modify/reject)
+- Explain your reasoning thoroughly
+- Consider market conditions and timing
 
-Always prioritize risk management and provide structured, actionable advice."""
+Always prioritize risk management and capital preservation in your analysis."""
     
     def _get_strategy_analyst_system_prompt(self) -> str:
         """Get system prompt for strategy analyst role."""
-        return """You are an expert trading strategy analyst with deep knowledge of quantitative trading, backtesting, and strategy optimization.
+        return """You are an expert trading strategy analyst with deep knowledge of algorithmic trading and strategy optimization.
 
-Your role is to:
-- Analyze strategy performance
-- Identify optimization opportunities
-- Suggest parameter adjustments
-- Assess strategy robustness
-- Provide actionable recommendations
+Your analysis should focus on:
+- Strategy performance evaluation
+- Identifying strengths and weaknesses
+- Optimization opportunities
+- Market adaptation recommendations
+- Risk management improvements
 
-Focus on data-driven insights and practical improvements."""
+Provide actionable insights that can be implemented to improve strategy performance."""
     
     def _parse_market_commentary(self, commentary_text: str, market_info: Dict[str, Any]) -> Dict[str, Any]:
-        """Parse market commentary response into structured format."""
-        try:
-            # Extract sentiment and confidence
-            sentiment = "neutral"
-            confidence = 0.5
-            
-            if "bullish" in commentary_text.lower():
-                sentiment = "bullish"
-            elif "bearish" in commentary_text.lower():
-                sentiment = "bearish"
-            
-            # Extract insights (simple parsing)
-            insights = []
-            lines = commentary_text.split('\n')
-            for line in lines:
-                if line.strip().startswith('-') or line.strip().startswith('•'):
-                    insights.append(line.strip()[1:].strip())
-            
-            return {
-                "commentary": commentary_text,
-                "insights": insights[:5],  # Limit to 5 insights
-                "sentiment": sentiment,
-                "confidence": confidence,
-                "symbol": market_info["symbol"],
-                "timestamp": datetime.now().isoformat()
-            }
-        except Exception as e:
-            logger.error(f"Failed to parse market commentary: {e}")
-            return {
-                "commentary": commentary_text,
-                "insights": [],
-                "sentiment": "neutral",
-                "confidence": 0.5,
-                "symbol": market_info["symbol"],
-                "timestamp": datetime.now().isoformat()
-            }
+        """Parse and structure market commentary response."""
+        # Basic parsing - in a production system, this would be more sophisticated
+        lines = commentary_text.split('\n')
+        
+        commentary = ""
+        insights = []
+        sentiment = "neutral"
+        confidence = 0.5
+        
+        current_section = ""
+        for line in lines:
+            line = line.strip()
+            if not line:
+                continue
+                
+            if "market commentary" in line.lower():
+                current_section = "commentary"
+            elif "key insights" in line.lower():
+                current_section = "insights"
+            elif "sentiment" in line.lower():
+                current_section = "sentiment"
+                # Extract sentiment
+                if "bullish" in line.lower():
+                    sentiment = "bullish"
+                elif "bearish" in line.lower():
+                    sentiment = "bearish"
+                else:
+                    sentiment = "neutral"
+            elif current_section == "commentary" and not line.startswith('**'):
+                commentary += line + " "
+            elif current_section == "insights" and line.startswith('-'):
+                insights.append(line[1:].strip())
+        
+        return {
+            "commentary": commentary.strip(),
+            "insights": insights,
+            "sentiment": sentiment,
+            "confidence": confidence,
+            "risk_factors": [],
+            "timestamp": datetime.now().isoformat()
+        }
     
     def _parse_decision_analysis(self, analysis_text: str, decision_context: Dict[str, Any]) -> Dict[str, Any]:
-        """Parse decision analysis response into structured format."""
-        try:
-            # Extract recommendation
-            recommendation = decision_context["proposed_action"]
-            if "confirm" in analysis_text.lower():
-                recommendation = decision_context["proposed_action"]
-            elif "modify" in analysis_text.lower() or "adjust" in analysis_text.lower():
-                recommendation = "modify"
-            elif "reject" in analysis_text.lower() or "cancel" in analysis_text.lower():
+        """Parse and structure decision analysis response."""
+        # Basic parsing - in a production system, this would be more sophisticated
+        lines = analysis_text.split('\n')
+        
+        recommendation = "hold"
+        reasoning = ""
+        confidence = 0.5
+        risk_assessment = "medium"
+        
+        for line in lines:
+            line = line.strip().lower()
+            if "confirm" in line and "recommendation" in line:
+                recommendation = "confirm"
+            elif "reject" in line and "recommendation" in line:
                 recommendation = "reject"
-            
-            # Extract confidence
-            confidence = decision_context["signal_data"].get("confidence", 0.0)
-            
-            return {
-                "analysis": analysis_text,
-                "recommendation": recommendation,
-                "reasoning": analysis_text,
-                "confidence": confidence,
-                "risk_assessment": "Standard risk assessment",
-                "symbol": decision_context["symbol"],
-                "timestamp": datetime.now().isoformat()
-            }
-        except Exception as e:
-            logger.error(f"Failed to parse decision analysis: {e}")
-            return {
-                "analysis": analysis_text,
-                "recommendation": decision_context["proposed_action"],
-                "reasoning": analysis_text,
-                "confidence": decision_context["signal_data"].get("confidence", 0.0),
-                "risk_assessment": "Unable to assess risk",
-                "symbol": decision_context["symbol"],
-                "timestamp": datetime.now().isoformat()
-            }
+            elif "modify" in line and "recommendation" in line:
+                recommendation = "modify"
+            elif "reasoning" in line:
+                reasoning = line.split(':', 1)[-1].strip() if ':' in line else line
+        
+        return {
+            "recommendation": recommendation,
+            "reasoning": reasoning,
+            "confidence": confidence,
+            "risk_assessment": risk_assessment,
+            "modifications": [],
+            "timestamp": datetime.now().isoformat()
+        }
     
     def _parse_strategy_insights(self, insights_text: str, strategy_context: Dict[str, Any]) -> Dict[str, Any]:
-        """Parse strategy insights response into structured format."""
-        try:
-            # Extract recommendations and suggestions
-            recommendations = []
-            optimization_suggestions = []
-            
-            lines = insights_text.split('\n')
-            for line in lines:
-                if line.strip().startswith('-') or line.strip().startswith('•'):
-                    if "optimize" in line.lower() or "parameter" in line.lower():
-                        optimization_suggestions.append(line.strip()[1:].strip())
-                    else:
-                        recommendations.append(line.strip()[1:].strip())
-            
-            return {
-                "insights": insights_text,
-                "recommendations": recommendations[:5],
-                "optimization_suggestions": optimization_suggestions[:5],
-                "strategy_name": strategy_context["strategy_name"],
-                "timestamp": datetime.now().isoformat()
-            }
-        except Exception as e:
-            logger.error(f"Failed to parse strategy insights: {e}")
-            return {
-                "insights": insights_text,
-                "recommendations": [],
-                "optimization_suggestions": [],
-                "strategy_name": strategy_context["strategy_name"],
-                "timestamp": datetime.now().isoformat()
-            }
+        """Parse and structure strategy insights response."""
+        # Basic parsing - in a production system, this would be more sophisticated
+        lines = insights_text.split('\n')
+        
+        insights = ""
+        recommendations = []
+        optimization_suggestions = []
+        
+        current_section = ""
+        for line in lines:
+            line = line.strip()
+            if not line:
+                continue
+                
+            if "performance insights" in line.lower():
+                current_section = "insights"
+            elif "optimization" in line.lower():
+                current_section = "optimization"
+            elif "recommendations" in line.lower():
+                current_section = "recommendations"
+            elif current_section == "insights" and not line.startswith('**'):
+                insights += line + " "
+            elif current_section == "optimization" and line.startswith('-'):
+                optimization_suggestions.append(line[1:].strip())
+            elif current_section == "recommendations" and line.startswith('-'):
+                recommendations.append(line[1:].strip())
+        
+        return {
+            "insights": insights.strip(),
+            "recommendations": recommendations,
+            "optimization_suggestions": optimization_suggestions,
+            "timestamp": datetime.now().isoformat()
+        }
 
 
 # Global OpenAI client instance

@@ -6,6 +6,7 @@ Handles trading budgets, API cost limits, and configuration management.
 import sys
 import os
 import logging
+import asyncio
 from datetime import datetime, timedelta
 from typing import Dict, Any, Optional, List
 from fastapi import FastAPI, HTTPException
@@ -20,7 +21,7 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
 from common.vault import get_vault_client, get_agent_config
 from common.db import get_db_client, health_check as db_health_check
 from common.logging import get_logger
-from common.models import TradingConfiguration, APICostTracking
+from common.websocket_client import AgentWebSocketClient, MessageType
 
 # Initialize structured logger
 logger = get_logger("config")
@@ -39,6 +40,7 @@ app.add_middleware(
 # Global clients
 vault_client = None
 db_client = None
+ws_client = None  # WebSocket client for real-time communication
 
 
 class TradingBudgetConfig(BaseModel):
@@ -316,10 +318,35 @@ class ConfigurationManager:
 config_manager = ConfigurationManager()
 
 
+async def health_monitor_loop():
+    """Background task to send periodic health updates to Meta Agent."""
+    while True:
+        try:
+            if ws_client and ws_client.is_connected:
+                # Gather health metrics
+                health_data = {
+                    "status": "healthy",
+                    "db_connected": db_client is not None,
+                    "vault_connected": vault_client is not None,
+                    "config_management_active": True,
+                    "last_health_check": datetime.utcnow().isoformat()
+                }
+                
+                await ws_client.send_health_update(health_data)
+                logger.debug("Sent health update to Meta Agent")
+            
+            # Wait 30 seconds before next health update
+            await asyncio.sleep(30)
+            
+        except Exception as e:
+            logger.error(f"Health monitor error: {e}")
+            await asyncio.sleep(30)  # Continue monitoring even if there's an error
+
+
 @app.on_event("startup")
 async def startup_event():
     """Initialize the configuration agent."""
-    global vault_client, db_client
+    global vault_client, db_client, ws_client
     
     try:
         # Initialize Vault client
@@ -329,6 +356,14 @@ async def startup_event():
         # Initialize database client
         db_client = get_db_client()
         logger.info("Database client initialized")
+        
+        # Initialize WebSocket client for real-time communication
+        ws_client = AgentWebSocketClient("config")
+        await ws_client.connect()
+        logger.info("WebSocket client connected to Meta Agent")
+        
+        # Start health monitoring background task
+        asyncio.create_task(health_monitor_loop())
         
         # Initialize default configurations if they don't exist
         for key, default_value in config_manager.default_configs.items():

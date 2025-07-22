@@ -179,11 +179,12 @@ class AgentLog(Base):
     """Agent activity and system logs."""
     __tablename__ = "agent_logs"
     
-    # For TimescaleDB hypertables, use timestamp as primary key
-    timestamp = Column(DateTime, nullable=False, primary_key=True)
+    id = Column(Integer, primary_key=True)
+    timestamp = Column(DateTime, nullable=False)
     agent_name = Column(String(50), nullable=False)
     level = Column(String(10), nullable=False)  # DEBUG, INFO, WARNING, ERROR
     message = Column(Text, nullable=False)
+    agent_metadata = Column("metadata", JSONB)  # Legacy metadata column (mapped to avoid SQLAlchemy conflict)
     log_context = Column(JSONB)  # Additional context data
     traceback = Column(Text)  # Error traceback if applicable
     
@@ -272,10 +273,178 @@ class MarketData(Base):
     )
 
 
+class Conversation(Base):
+    """Conversation sessions for conversational AI (Phase 3)."""
+    __tablename__ = "conversations"
+    
+    id = Column(Integer, primary_key=True)
+    conversation_id = Column(String(100), nullable=False, unique=True, index=True)
+    user_id = Column(String(100), nullable=False, index=True)
+    session_start = Column(DateTime, nullable=False, default=datetime.utcnow)
+    last_interaction = Column(DateTime, nullable=False, default=datetime.utcnow)
+    is_active = Column(Boolean, default=True, index=True)
+    user_preferences = Column(JSONB, default={})  # User's trading preferences
+    trading_context = Column(JSONB, default={})  # Budget, risk tolerance, goals
+    conversation_metadata = Column(JSONB, default={})  # Additional metadata
+    
+    # Relationships
+    messages = relationship("ConversationMessage", back_populates="conversation", cascade="all, delete-orphan")
+    tasks = relationship("ConversationTask", back_populates="conversation", cascade="all, delete-orphan")
+    
+    # Indexes
+    __table_args__ = (
+        Index('idx_conversations_user_active', 'user_id', 'is_active'),
+        Index('idx_conversations_last_interaction', 'last_interaction'),
+        Index('idx_conversations_session_start', 'session_start'),
+    )
+
+
+class ConversationMessage(Base):
+    """Individual messages in a conversation (Phase 3)."""
+    __tablename__ = "conversation_messages"
+    
+    id = Column(Integer, primary_key=True)
+    conversation_id = Column(String(100), ForeignKey("conversations.conversation_id"), nullable=False, index=True)
+    message_order = Column(Integer, nullable=False)  # Order within conversation
+    role = Column(String(20), nullable=False)  # "user" or "assistant"
+    content = Column(Text, nullable=False)
+    timestamp = Column(DateTime, nullable=False, default=datetime.utcnow, index=True)
+    message_metadata = Column(JSONB, default={})  # Additional message data
+    
+    # Relationships
+    conversation = relationship("Conversation", back_populates="messages")
+    
+    # Indexes
+    __table_args__ = (
+        Index('idx_conv_messages_conv_order', 'conversation_id', 'message_order'),
+        Index('idx_conv_messages_timestamp', 'timestamp'),
+        Index('idx_conv_messages_role_timestamp', 'role', 'timestamp'),
+        UniqueConstraint('conversation_id', 'message_order', name='uq_message_order'),
+    )
+
+
+class ConversationTask(Base):
+    """Tasks decomposed from conversations (Phase 3)."""
+    __tablename__ = "conversation_tasks"
+    
+    id = Column(Integer, primary_key=True)
+    task_id = Column(String(100), nullable=False, unique=True, index=True)
+    conversation_id = Column(String(100), ForeignKey("conversations.conversation_id"), nullable=False, index=True)
+    task_type = Column(String(50), nullable=False, index=True)  # TaskType enum values
+    description = Column(Text, nullable=False)
+    agent = Column(String(50), nullable=False)  # Which agent should handle this
+    parameters = Column(JSONB, default={})  # Task parameters
+    status = Column(String(20), nullable=False, default='pending', index=True)  # TaskStatus enum values
+    priority = Column(Integer, default=1)  # Task priority (1=highest, 5=lowest)
+    dependencies = Column(JSONB, default=[])  # Task IDs this task depends on
+    result = Column(JSONB)  # Task execution result
+    error = Column(Text)  # Error message if task failed
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow, index=True)
+    started_at = Column(DateTime)  # When task execution began
+    completed_at = Column(DateTime)  # When task completed/failed
+    
+    # Relationships
+    conversation = relationship("Conversation", back_populates="tasks")
+    
+    # Indexes
+    __table_args__ = (
+        Index('idx_conv_tasks_conv_created', 'conversation_id', 'created_at'),
+        Index('idx_conv_tasks_status_created', 'status', 'created_at'),
+        Index('idx_conv_tasks_type_created', 'task_type', 'created_at'),
+        Index('idx_conv_tasks_agent_status', 'agent', 'status'),
+        Index('idx_conv_tasks_priority_status', 'priority', 'status'),
+    )
+
+
+class ConversationContext(Base):
+    """Persistent conversation context and state (Phase 3)."""
+    __tablename__ = "conversation_context"
+    
+    id = Column(Integer, primary_key=True)
+    conversation_id = Column(String(100), ForeignKey("conversations.conversation_id"), nullable=False, unique=True, index=True)
+    context_data = Column(JSONB, nullable=False, default={})  # Serialized conversation context
+    symbols_mentioned = Column(JSONB, default=[])  # Symbols discussed in conversation
+    strategies_discussed = Column(JSONB, default=[])  # Strategies mentioned
+    last_updated = Column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
+    
+    # Relationship
+    conversation = relationship("Conversation", uselist=False)
+    
+    # Indexes
+    __table_args__ = (
+        Index('idx_conv_context_updated', 'last_updated'),
+    )
+
+
+class UserProfile(Base):
+    """User profiles for personalized trading assistance (Phase 3)."""
+    __tablename__ = "user_profiles"
+    
+    id = Column(Integer, primary_key=True)
+    user_id = Column(String(100), nullable=False, unique=True, index=True)
+    display_name = Column(String(100))
+    email = Column(String(255), unique=True, index=True)
+    risk_tolerance = Column(String(20), default='medium')  # low, medium, high
+    trading_experience = Column(String(20), default='beginner')  # beginner, intermediate, advanced
+    preferred_timeframes = Column(JSONB, default=['1h', '4h'])  # Preferred trading timeframes
+    favorite_symbols = Column(JSONB, default=[])  # Frequently traded symbols
+    trading_budget = Column(Float)  # Available trading capital
+    goals = Column(JSONB, default={})  # Trading goals and targets
+    restrictions = Column(JSONB, default={})  # Trading restrictions or limits
+    preferences = Column(JSONB, default={})  # UI and notification preferences
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    updated_at = Column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
+    last_active = Column(DateTime)
+    
+    # Indexes
+    __table_args__ = (
+        Index('idx_user_profiles_last_active', 'last_active'),
+        Index('idx_user_profiles_risk_tolerance', 'risk_tolerance'),
+        Index('idx_user_profiles_trading_experience', 'trading_experience'),
+    )
+
+
+class TaskExecution(Base):
+    """Task execution history and audit trail (Phase 3)."""
+    __tablename__ = "task_executions"
+    
+    id = Column(Integer, primary_key=True)
+    execution_id = Column(String(100), nullable=False, unique=True, index=True)
+    task_id = Column(String(100), ForeignKey("conversation_tasks.task_id"), nullable=False, index=True)
+    agent_name = Column(String(50), nullable=False, index=True)
+    execution_start = Column(DateTime, nullable=False, default=datetime.utcnow)
+    execution_end = Column(DateTime)
+    status = Column(String(20), nullable=False, default='started', index=True)  # started, completed, failed
+    inputs = Column(JSONB, default={})  # Task inputs/parameters
+    outputs = Column(JSONB)  # Task outputs/results
+    error_details = Column(JSONB)  # Detailed error information
+    execution_metadata = Column(JSONB, default={})  # Additional execution data
+    
+    # Relationships
+    task = relationship("ConversationTask")
+    
+    # Indexes
+    __table_args__ = (
+        Index('idx_task_exec_task_start', 'task_id', 'execution_start'),
+        Index('idx_task_exec_agent_start', 'agent_name', 'execution_start'),
+        Index('idx_task_exec_status_start', 'status', 'execution_start'),
+    )
+
+
 # Utility functions for common operations
 def create_trade_id() -> str:
     """Generate a unique trade ID."""
     return f"trade_{uuid.uuid4().hex[:16]}"
+
+
+def create_conversation_id() -> str:
+    """Generate a unique conversation ID."""
+    return f"conv_{uuid.uuid4().hex[:16]}"
+
+
+def create_task_id() -> str:
+    """Generate a unique task ID."""
+    return f"task_{uuid.uuid4().hex[:16]}"
 
 
 def get_timeframe_interval(timeframe: str) -> str:

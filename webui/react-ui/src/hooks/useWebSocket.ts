@@ -19,6 +19,14 @@ export const useWebSocketConnection = () => {
 
   useEffect(() => {
     const unsubscribe = webSocketService.onConnectionChange(setConnectionStatus);
+    
+    // Auto-connect when hook is first used
+    if (!webSocketService.getConnectionStatus().connected) {
+      webSocketService.connect().catch(error => {
+        console.warn('WebSocket connection failed:', error);
+      });
+    }
+    
     return unsubscribe;
   }, []);
 

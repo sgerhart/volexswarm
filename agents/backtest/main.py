@@ -28,6 +28,7 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
 
 from common.vault import get_vault_client, get_agent_config
 from common.db import get_db_client, health_check as db_health_check
+from common.websocket_client import AgentWebSocketClient, MessageType
 from common.logging import get_logger
 from common.models import Backtest, Strategy, Trade, PriceData, PerformanceMetrics
 
@@ -48,6 +49,7 @@ app.add_middleware(
 # Global clients
 vault_client = None
 db_client = None
+ws_client = None  # WebSocket client for real-time communication
 exchanges = {}  # Exchange instances for data fetching
 
 
@@ -490,10 +492,35 @@ backtest_engine = BacktestEngine()
 data_manager = DataManager()
 
 
+async def health_monitor_loop():
+    """Background task to send periodic health updates to Meta Agent."""
+    while True:
+        try:
+            if ws_client and ws_client.is_connected:
+                # Gather health metrics
+                health_data = {
+                    "status": "healthy",
+                    "db_connected": db_client is not None,
+                    "vault_connected": vault_client is not None,
+                    "backtest_engine_active": True,
+                    "last_health_check": datetime.utcnow().isoformat()
+                }
+                
+                await ws_client.send_health_update(health_data)
+                logger.debug("Sent health update to Meta Agent")
+            
+            # Wait 30 seconds before next health update
+            await asyncio.sleep(30)
+            
+        except Exception as e:
+            logger.error(f"Health monitor error: {e}")
+            await asyncio.sleep(30)  # Continue monitoring even if there's an error
+
+
 @app.on_event("startup")
 async def startup_event():
     """Initialize the backtest agent on startup."""
-    global vault_client, db_client
+    global vault_client, db_client, ws_client
     
     try:
         # Initialize Vault client
@@ -503,6 +530,14 @@ async def startup_event():
         # Initialize database client
         db_client = get_db_client()
         logger.info("Database client initialized")
+        
+        # Initialize WebSocket client for real-time communication
+        ws_client = AgentWebSocketClient("backtest")
+        await ws_client.connect()
+        logger.info("WebSocket client connected to Meta Agent")
+        
+        # Start health monitoring background task
+        asyncio.create_task(health_monitor_loop())
         
         # Initialize data manager
         await data_manager.initialize_exchanges()
@@ -755,4 +790,4 @@ async def get_available_symbols(exchange: str):
 
 
 if __name__ == "__main__":
-    uvicorn.run(app, host="0.0.0.0", port=8004)
+    uvicorn.run(app, host="0.0.0.0", port=8006)

@@ -27,6 +27,7 @@ from common.db import get_db_client, health_check as db_health_check
 from common.logging import get_logger
 from common.models import Signal, PriceData, Strategy, Trade
 from common.openai_client import get_openai_client, is_openai_available
+from common.websocket_client import AgentWebSocketClient, MessageType
 
 # Initialize structured logger
 logger = get_logger("signal")
@@ -45,6 +46,7 @@ app.add_middleware(
 # Global clients
 vault_client = None
 db_client = None
+ws_client = None  # WebSocket client for real-time communication
 autonomous_mode = True  # Default to autonomous mode
 
 
@@ -454,7 +456,7 @@ signal_agent = None
 @app.on_event("startup")
 async def startup_event():
     """Initialize the signal agent on startup."""
-    global vault_client, db_client, signal_agent, autonomous_mode
+    global vault_client, db_client, ws_client, signal_agent, autonomous_mode
     
     try:
         with logger.log_operation("signal_agent_startup"):
@@ -465,6 +467,11 @@ async def startup_event():
             # Initialize database client
             db_client = get_db_client()
             logger.info("Database client initialized successfully")
+            
+            # Initialize WebSocket client for real-time communication
+            ws_client = AgentWebSocketClient("signal")
+            await ws_client.connect()
+            logger.info("WebSocket client connected to Meta Agent")
             
             # Load agent configuration
             config = get_agent_config("signal")
@@ -477,6 +484,9 @@ async def startup_event():
             
             # Load pre-trained models if available
             await load_models()
+            
+            # Start health monitoring background task
+            asyncio.create_task(health_monitor_loop())
             
             logger.info("Signal agent initialized successfully")
             logger.info(f"Autonomous mode: {autonomous_mode}")
@@ -494,6 +504,32 @@ async def load_models():
         logger.info("Models will be trained on-demand")
     except Exception as e:
         logger.warning(f"Failed to load models: {e}")
+
+
+async def health_monitor_loop():
+    """Background task to send periodic health updates to Meta Agent."""
+    while True:
+        try:
+            if ws_client and ws_client.is_connected:
+                # Gather health metrics
+                health_data = {
+                    "status": "healthy",
+                    "last_signal_time": datetime.utcnow().isoformat(),
+                    "db_connected": db_client is not None,
+                    "vault_connected": vault_client is not None,
+                    "autonomous_mode": autonomous_mode,
+                    "models_loaded": signal_agent is not None
+                }
+                
+                await ws_client.send_health_update(health_data)
+                logger.debug("Sent health update to Meta Agent")
+            
+            # Wait 30 seconds before next health update
+            await asyncio.sleep(30)
+            
+        except Exception as e:
+            logger.error(f"Health monitor error: {e}")
+            await asyncio.sleep(30)  # Continue monitoring even if there's an error
 
 
 @app.get("/health")
@@ -609,6 +645,21 @@ def generate_signal(symbol: str, strategy_id: Optional[int] = None):
                     'strength': signal.strength,
                     'autonomous': True
                 })
+                
+                # Broadcast signal update via WebSocket
+                if ws_client and ws_client.is_connected:
+                    signal_data = {
+                        'symbol': signal.symbol,
+                        'signal_type': signal.signal_type,
+                        'strength': signal.strength,
+                        'confidence': signal.confidence,
+                        'timeframe': signal.timeframe,
+                        'timestamp': signal.timestamp.isoformat(),
+                        'indicators': indicators,
+                        'metadata': signal_metadata
+                    }
+                    asyncio.create_task(ws_client.send_signal_update(signal_data))
+                    logger.debug(f"Broadcasted signal update for {symbol} via WebSocket")
             
             session.close()
             

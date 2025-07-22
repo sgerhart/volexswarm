@@ -32,6 +32,7 @@ from common.db import get_db_client, health_check as db_health_check
 from common.logging import get_logger
 from common.models import PriceData, Strategy, Signal
 from common.openai_client import get_openai_client, is_openai_available
+from common.websocket_client import AgentWebSocketClient, MessageType
 
 # Initialize structured logger
 logger = get_logger("research")
@@ -50,6 +51,7 @@ app.add_middleware(
 # Global clients
 vault_client = None
 db_client = None
+ws_client = None  # WebSocket client for real-time communication
 openai_client = None
 
 # Research data cache
@@ -598,10 +600,36 @@ class ResearchAgent:
 research_agent = None
 
 
+async def health_monitor_loop():
+    """Background task to send periodic health updates to Meta Agent."""
+    while True:
+        try:
+            if ws_client and ws_client.is_connected:
+                # Gather health metrics
+                health_data = {
+                    "status": "healthy",
+                    "db_connected": db_client is not None,
+                    "vault_connected": vault_client is not None,
+                    "openai_connected": openai_client is not None,
+                    "cache_size": len(research_cache),
+                    "last_health_check": datetime.utcnow().isoformat()
+                }
+                
+                await ws_client.send_health_update(health_data)
+                logger.debug("Sent health update to Meta Agent")
+            
+            # Wait 30 seconds before next health update
+            await asyncio.sleep(30)
+            
+        except Exception as e:
+            logger.error(f"Health monitor error: {e}")
+            await asyncio.sleep(30)  # Continue monitoring even if there's an error
+
+
 @app.on_event("startup")
 async def startup_event():
     """Initialize the enhanced research agent on startup."""
-    global vault_client, db_client, openai_client, research_agent
+    global vault_client, db_client, ws_client, openai_client, research_agent
     
     try:
         with logger.log_operation("agent_startup"):
@@ -612,6 +640,11 @@ async def startup_event():
             # Initialize database client
             db_client = get_db_client()
             logger.info("Database client initialized successfully")
+            
+            # Initialize WebSocket client for real-time communication
+            ws_client = AgentWebSocketClient("research")
+            await ws_client.connect()
+            logger.info("WebSocket client connected to Meta Agent")
             
             # Initialize OpenAI client
             if is_openai_available():
@@ -628,6 +661,9 @@ async def startup_event():
             config = get_agent_config("research")
             if config:
                 logger.info("Loaded configuration for research agent", config)
+            
+            # Start health monitoring background task
+            asyncio.create_task(health_monitor_loop())
             
             logger.info("Enhanced research agent initialized successfully")
         

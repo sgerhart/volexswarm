@@ -1,6 +1,8 @@
 """
 VolexSwarm Meta-Agent - Central Coordinator for Autonomous AI Trading System
 Handles agent coordination, natural language interface, and workflow management.
+
+Phase 3 Enhancement: Advanced Conversational AI with GPT-4 Integration
 """
 
 import sys
@@ -27,11 +29,13 @@ from common.vault import get_vault_client, get_agent_config
 from common.db import get_db_client, health_check as db_health_check
 from common.logging import get_logger
 from common.models import Strategy, Trade, Signal, AgentLog
+from common.conversational_ai import ConversationalAI, ConversationResponse, Task, TaskStatus, TaskType
+from common.openai_client import VolexSwarmOpenAIClient
 
 # Initialize structured logger
 logger = get_logger("meta")
 
-app = FastAPI(title="VolexSwarm Meta-Agent", version="1.0.0")
+app = FastAPI(title="VolexSwarm Meta-Agent", version="2.0.0")
 
 # Add CORS middleware
 app.add_middleware(
@@ -45,6 +49,7 @@ app.add_middleware(
 # Global clients
 vault_client = None
 db_client = None
+conversational_ai = None
 
 # Agent endpoints
 AGENT_ENDPOINTS = {
@@ -82,6 +87,7 @@ class MessageType(Enum):
     """WebSocket message types."""
     COMMAND = "command"
     AGENT_STATUS = "agent_status"
+    HEALTH_UPDATE = "health_update"
     SYSTEM_METRICS = "system_metrics"
     TRADE_UPDATE = "trade_update"
     SIGNAL_UPDATE = "signal_update"
@@ -92,6 +98,7 @@ class MessageType(Enum):
     SUBSCRIBE = "subscribe"
     UNSUBSCRIBE = "unsubscribe"
     ERROR = "error"
+    RESPONSE = "response"
 
 @dataclass
 class WebSocketMessage:
@@ -283,6 +290,37 @@ ws_manager = WebSocketManager()
 class CommandRequest(BaseModel):
     """Request model for natural language commands."""
     command: str
+
+
+class ConversationRequest(BaseModel):
+    """Request model for conversational AI interactions."""
+    message: str
+    user_id: str = "default_user"
+    conversation_id: Optional[str] = None
+
+
+class ConversationMessage(BaseModel):
+    """Individual conversation message."""
+    role: str  # "user" or "assistant"
+    content: str
+    timestamp: str
+    tasks: Optional[List[Dict[str, Any]]] = None
+
+
+class TaskExecutionRequest(BaseModel):
+    """Request to execute or update a task."""
+    conversation_id: str
+    task_id: str
+    action: str  # "execute", "confirm", "cancel"
+    parameters: Optional[Dict[str, Any]] = None
+
+
+class TaskExecutionResponse(BaseModel):
+    """Response from task execution."""
+    task_id: str
+    status: str
+    result: Optional[Dict[str, Any]] = None
+    message: str
 
 
 class CommandType(Enum):
@@ -559,6 +597,78 @@ class AgentCoordinator:
         except Exception as e:
             return {"status": "error", "error": str(e)}
     
+    async def research_symbol(self, symbol: str) -> Dict[str, Any]:
+        """Research a symbol using the research agent."""
+        try:
+            research_url = f"{AGENT_ENDPOINTS['research']}/market-data/{symbol}"
+            async with self.session.get(research_url) as response:
+                if response.status == 200:
+                    return await response.json()
+                else:
+                    return {"error": f"Research agent error: {response.status}"}
+        except Exception as e:
+            return {"error": f"Research failed: {str(e)}"}
+    
+    async def assess_risk(self, parameters: Dict[str, Any]) -> Dict[str, Any]:
+        """Assess risk using the risk agent."""
+        try:
+            risk_url = f"{AGENT_ENDPOINTS['risk']}/assess"
+            async with self.session.post(risk_url, json=parameters) as response:
+                if response.status == 200:
+                    return await response.json()
+                else:
+                    return {"error": f"Risk agent error: {response.status}"}
+        except Exception as e:
+            return {"error": f"Risk assessment failed: {str(e)}"}
+    
+    async def get_account_info(self, exchange: str = "binance") -> Dict[str, Any]:
+        """Get account information using the execution agent."""
+        try:
+            account_url = f"{AGENT_ENDPOINTS['execution']}/account"
+            async with self.session.get(account_url) as response:
+                if response.status == 200:
+                    return await response.json()
+                else:
+                    return {"error": f"Execution agent error: {response.status}"}
+        except Exception as e:
+            return {"error": f"Account check failed: {str(e)}"}
+    
+    async def optimize_strategy(self, strategy_name: str, parameters: Dict[str, Any]) -> Dict[str, Any]:
+        """Optimize strategy using the strategy agent."""
+        try:
+            strategy_url = f"{AGENT_ENDPOINTS['strategy']}/optimize/{strategy_name}"
+            async with self.session.post(strategy_url, json=parameters) as response:
+                if response.status == 200:
+                    return await response.json()
+                else:
+                    return {"error": f"Strategy agent error: {response.status}"}
+        except Exception as e:
+            return {"error": f"Strategy optimization failed: {str(e)}"}
+    
+    async def get_portfolio_status(self) -> Dict[str, Any]:
+        """Get portfolio status using the monitor agent."""
+        try:
+            portfolio_url = f"{AGENT_ENDPOINTS['monitor']}/portfolio"
+            async with self.session.get(portfolio_url) as response:
+                if response.status == 200:
+                    return await response.json()
+                else:
+                    return {"error": f"Monitor agent error: {response.status}"}
+        except Exception as e:
+            return {"error": f"Portfolio status failed: {str(e)}"}
+    
+    async def check_compliance(self, parameters: Dict[str, Any]) -> Dict[str, Any]:
+        """Check compliance using the compliance agent."""
+        try:
+            compliance_url = f"{AGENT_ENDPOINTS['compliance']}/check"
+            async with self.session.post(compliance_url, json=parameters) as response:
+                if response.status == 200:
+                    return await response.json()
+                else:
+                    return {"error": f"Compliance agent error: {response.status}"}
+        except Exception as e:
+            return {"error": f"Compliance check failed: {str(e)}"}
+
     async def analyze_symbol(self, symbol: str, parameters: Dict[str, Any] = None) -> Dict[str, Any]:
         """Analyze a symbol using research and signal agents."""
         try:
@@ -768,7 +878,7 @@ coordinator = None
 @app.on_event("startup")
 async def startup_event():
     """Initialize the meta agent on startup."""
-    global vault_client, db_client, coordinator
+    global vault_client, db_client, coordinator, conversational_ai
     
     try:
         with logger.log_operation("meta_agent_startup"):
@@ -780,6 +890,10 @@ async def startup_event():
             db_client = get_db_client()
             logger.info("Database client initialized successfully")
             
+            # Initialize conversational AI
+            conversational_ai = ConversationalAI()
+            logger.info("Conversational AI initialized successfully")
+            
             # Initialize agent coordinator
             coordinator = AgentCoordinator()
             await coordinator.initialize()
@@ -789,7 +903,7 @@ async def startup_event():
             await ws_manager.start_heartbeat()
             logger.info("WebSocket manager started successfully")
             
-            logger.info("Meta agent initialized successfully")
+            logger.info("Meta agent with conversational AI initialized successfully")
         
     except Exception as e:
         logger.error("Failed to initialize meta agent", exception=e)
@@ -938,6 +1052,248 @@ async def process_command(request: CommandRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@app.post("/conversation")
+async def process_conversation(request: ConversationRequest):
+    """Process conversational AI message (Phase 3 Enhanced Feature)."""
+    try:
+        if not conversational_ai:
+            raise HTTPException(status_code=500, detail="Conversational AI not initialized")
+        
+        with logger.log_operation("process_conversation", {
+            "user_id": request.user_id,
+            "conversation_id": request.conversation_id,
+            "message_length": len(request.message)
+        }):
+            # Process message through conversational AI
+            response = await conversational_ai.process_message(
+                user_message=request.message,
+                user_id=request.user_id,
+                conversation_id=request.conversation_id
+            )
+            
+            # Start executing tasks if they don't require confirmation
+            executed_tasks = []
+            if response.tasks and not response.requires_confirmation:
+                for task in response.tasks:
+                    try:
+                        # Execute task through coordinator
+                        task_result = await execute_task_with_coordinator(task)
+                        
+                        # Update task status in conversational AI
+                        conversational_ai.update_task_status(
+                            conversation_id=response.tasks[0].id if response.tasks else "unknown",
+                            task_id=task.id,
+                            status=TaskStatus.COMPLETED,
+                            result=task_result
+                        )
+                        
+                        executed_tasks.append({
+                            "task_id": task.id,
+                            "status": "completed",
+                            "result": task_result
+                        })
+                        
+                    except Exception as task_error:
+                        # Update task status as failed
+                        conversational_ai.update_task_status(
+                            conversation_id=response.tasks[0].id if response.tasks else "unknown",
+                            task_id=task.id,
+                            status=TaskStatus.FAILED,
+                            error=str(task_error)
+                        )
+                        
+                        executed_tasks.append({
+                            "task_id": task.id,
+                            "status": "failed",
+                            "error": str(task_error)
+                        })
+            
+            return {
+                "message": response.message,
+                "tasks": [asdict(task) for task in response.tasks],
+                "requires_confirmation": response.requires_confirmation,
+                "executed_tasks": executed_tasks,
+                "conversation_id": request.conversation_id or response.context_updates.get("conversation_id"),
+                "next_actions": response.next_actions,
+                "structured_data": response.structured_data
+            }
+            
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error("Failed to process conversation", {"error": str(e)})
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/conversation/{conversation_id}/task/{task_id}")
+async def execute_task(conversation_id: str, task_id: str, request: TaskExecutionRequest):
+    """Execute, confirm, or cancel a specific task."""
+    try:
+        if not conversational_ai:
+            raise HTTPException(status_code=500, detail="Conversational AI not initialized")
+        
+        # Get conversation context
+        context = conversational_ai.get_conversation_context(conversation_id)
+        if not context:
+            raise HTTPException(status_code=404, detail="Conversation not found")
+        
+        # Find the task
+        task = None
+        for active_task in context.active_tasks:
+            if active_task.id == task_id:
+                task = active_task
+                break
+        
+        if not task:
+            raise HTTPException(status_code=404, detail="Task not found")
+        
+        if request.action == "execute" or request.action == "confirm":
+            try:
+                # Execute the task
+                result = await execute_task_with_coordinator(task)
+                
+                # Update task status
+                conversational_ai.update_task_status(
+                    conversation_id=conversation_id,
+                    task_id=task_id,
+                    status=TaskStatus.COMPLETED,
+                    result=result
+                )
+                
+                return TaskExecutionResponse(
+                    task_id=task_id,
+                    status="completed",
+                    result=result,
+                    message=f"Task '{task.description}' completed successfully"
+                )
+                
+            except Exception as e:
+                # Update task status as failed
+                conversational_ai.update_task_status(
+                    conversation_id=conversation_id,
+                    task_id=task_id,
+                    status=TaskStatus.FAILED,
+                    error=str(e)
+                )
+                
+                return TaskExecutionResponse(
+                    task_id=task_id,
+                    status="failed",
+                    message=f"Task '{task.description}' failed: {str(e)}"
+                )
+        
+        elif request.action == "cancel":
+            # Cancel the task
+            conversational_ai.update_task_status(
+                conversation_id=conversation_id,
+                task_id=task_id,
+                status=TaskStatus.FAILED,
+                error="Cancelled by user"
+            )
+            
+            return TaskExecutionResponse(
+                task_id=task_id,
+                status="cancelled",
+                message=f"Task '{task.description}' cancelled"
+            )
+        
+        else:
+            raise HTTPException(status_code=400, detail=f"Unknown action: {request.action}")
+            
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error("Failed to execute task", {"error": str(e)})
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/conversation/{conversation_id}")
+async def get_conversation(conversation_id: str):
+    """Get conversation history and context."""
+    try:
+        if not conversational_ai:
+            raise HTTPException(status_code=500, detail="Conversational AI not initialized")
+        
+        context = conversational_ai.get_conversation_context(conversation_id)
+        if not context:
+            raise HTTPException(status_code=404, detail="Conversation not found")
+        
+        return {
+            "conversation_id": context.conversation_id,
+            "user_id": context.user_id,
+            "session_start": context.session_start.isoformat(),
+            "last_interaction": context.last_interaction.isoformat(),
+            "message_count": len(context.conversation_history),
+            "active_tasks": len(context.active_tasks),
+            "completed_tasks": len(context.completed_tasks),
+            "user_preferences": context.user_preferences,
+            "trading_context": context.trading_context,
+            "conversation_history": context.conversation_history[-20:],  # Last 20 messages
+            "tasks": {
+                "active": [asdict(task) for task in context.active_tasks],
+                "completed": [asdict(task) for task in context.completed_tasks[-10:]]  # Last 10 completed
+            }
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error("Failed to get conversation", {"error": str(e)})
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+async def execute_task_with_coordinator(task: Task) -> Dict[str, Any]:
+    """Execute a task using the appropriate agent coordinator."""
+    if not coordinator:
+        raise Exception("Coordinator not initialized")
+    
+    # Route task to appropriate coordinator method based on task type
+    if task.type == TaskType.ACCOUNT_CHECK:
+        # Get account balance and information
+        return await coordinator.get_account_info(task.parameters.get("exchange", "binance"))
+    
+    elif task.type == TaskType.MARKET_RESEARCH:
+        # Perform market research
+        symbols = task.parameters.get("symbols", ["BTCUSD"])
+        research_results = {}
+        for symbol in symbols:
+            research_results[symbol] = await coordinator.research_symbol(symbol)
+        return research_results
+    
+    elif task.type == TaskType.TECHNICAL_ANALYSIS:
+        # Perform technical analysis
+        symbol = task.parameters.get("symbol", "BTCUSD")
+        return await coordinator.analyze_symbol(symbol, task.parameters)
+    
+    elif task.type == TaskType.RISK_ASSESSMENT:
+        # Assess risk for position
+        return await coordinator.assess_risk(task.parameters)
+    
+    elif task.type == TaskType.TRADE_EXECUTION:
+        # Execute trade
+        symbol = task.parameters.get("symbol", "BTCUSD")
+        action = task.parameters.get("action", "auto")
+        confidence = task.parameters.get("confidence", 0.7)
+        amount = task.parameters.get("amount")
+        return await coordinator.execute_trade(symbol, action, confidence, amount)
+    
+    elif task.type == TaskType.STRATEGY_OPTIMIZATION:
+        # Optimize strategy
+        strategy_name = task.parameters.get("strategy_name")
+        return await coordinator.optimize_strategy(strategy_name, task.parameters)
+    
+    elif task.type == TaskType.PORTFOLIO_MONITORING:
+        # Monitor portfolio
+        return await coordinator.get_portfolio_status()
+    
+    elif task.type == TaskType.COMPLIANCE_CHECK:
+        # Check compliance
+        return await coordinator.check_compliance(task.parameters)
+    
+    else:
+        raise Exception(f"Unknown task type: {task.type}")
+
+
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
     """Enhanced WebSocket endpoint for real-time updates."""
@@ -949,7 +1305,7 @@ async def websocket_endpoint(websocket: WebSocket):
             data = await websocket.receive_text()
             message_data = json.loads(data)
             
-            message_type = MessageType(message_data.get("type", "command"))
+            message_type = MessageType(message_data.get("type", "command").lower())
             
             if message_type == MessageType.COMMAND:
                 # Process command and send response
@@ -985,6 +1341,30 @@ async def websocket_endpoint(websocket: WebSocket):
                         data={"message": f"Unsubscribed from {topic}"}
                     )
                     await ws_manager.send_to_connection(connection_id, ack_message)
+            
+            elif message_type == MessageType.AGENT_STATUS:
+                # Handle agent status updates
+                agent_data = message_data.get("data", {})
+                agent_name = agent_data.get("agent", "unknown")
+                logger.info(f"Received status update from {agent_name}: {agent_data.get('status', 'unknown')}")
+                
+                # Broadcast agent status to subscribed clients
+                await ws_manager.broadcast_to_topic("agent_status", WebSocketMessage(
+                    type=MessageType.AGENT_STATUS,
+                    data=agent_data
+                ))
+            
+            elif message_type == MessageType.HEALTH_UPDATE:
+                # Handle agent health updates
+                health_data = message_data.get("data", {})
+                agent_name = health_data.get("agent", "unknown")
+                logger.debug(f"Received health update from {agent_name}")
+                
+                # Broadcast health update to subscribed clients
+                await ws_manager.broadcast_to_topic("health_updates", WebSocketMessage(
+                    type=MessageType.HEALTH_UPDATE,
+                    data=health_data
+                ))
             
             elif message_type == MessageType.PONG:
                 # Update last ping time
