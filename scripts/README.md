@@ -5,6 +5,7 @@ This directory contains organized scripts for managing the VolexSwarm trading sy
 ## 📁 Directory Structure
 
 ### `database/` - Database Management Scripts
+- **`setup_schema.py`** - Set up complete database schema for new deployments
 - **`backup_vault.py`** - Secure Vault backup with encryption
 - **`restore_vault.py`** - Restore Vault secrets from encrypted backup
 - **`view_backup.py`** - View backup contents without restoring
@@ -62,9 +63,10 @@ python scripts/database/restore_vault.py
 
 ## 🚀 Quick Start
 
-1. **Initialize Vault**: `python scripts/setup/init_vault.py`
-2. **Add API Keys**: `python scripts/setup/init_openai.py`
-3. **Test Setup**: `python scripts/test/test_db.py`
+1. **Setup Database Schema**: `python scripts/database/setup_schema.py`
+2. **Initialize Vault**: `python scripts/setup/init_vault.py`
+3. **Add API Keys**: `python scripts/setup/init_openai.py`
+4. **Test Setup**: `python scripts/test/test_db.py`
 
 ## 📝 Notes
 

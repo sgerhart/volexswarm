@@ -68,8 +68,8 @@ def main():
         return False
     
     print("✅ Database reset completed successfully!")
-    print("   Database is now completely fresh and ready for use.")
-    print("   All tables will be recreated when agents start.")
+    print("   Database is now completely fresh.")
+    print("   Run 'python scripts/database/setup_schema.py' to set up the schema.")
     
     return True
 

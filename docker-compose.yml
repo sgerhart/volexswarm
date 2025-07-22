@@ -112,6 +112,28 @@ services:
       - research
       - execution
       - signal
+      - strategy
+    volumes:
+      - ./logs/agents:/app/logs
+    restart: unless-stopped
+
+  strategy:
+    build:
+      context: .
+      dockerfile: docker/strategy.Dockerfile
+    ports:
+      - "8011:8011"
+    environment:
+      - VAULT_ADDR=http://vault:8200
+      - VAULT_TOKEN=root
+      - DB_HOST=db
+      - DB_PORT=5432
+      - DB_NAME=volextrades
+      - DB_USER=volex
+      - DB_PASSWORD=volex_pass
+    depends_on:
+      - vault
+      - db
     volumes:
       - ./logs/agents:/app/logs
     restart: unless-stopped
