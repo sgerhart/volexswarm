@@ -16,6 +16,16 @@ import {
   Chip,
   useTheme,
   useMediaQuery,
+  Grid,
+  Table,
+  TableBody,
+  TableCell,
+  TableContainer,
+  TableHead,
+  TableRow,
+  Paper,
+  LinearProgress,
+  Divider,
 } from '@mui/material';
 import {
   Dashboard as DashboardIcon,
@@ -26,6 +36,12 @@ import {
   Menu as MenuIcon,
   Refresh as RefreshIcon,
   Notifications as NotificationsIcon,
+  TrendingUp as TrendingUpIcon,
+  TrendingDown as TrendingDownIcon,
+  AttachMoney as MoneyIcon,
+  Warning as WarningIcon,
+  CheckCircle as CheckCircleIcon,
+  Storage as StorageIcon,
 } from '@mui/icons-material';
 import AgentStatus from './AgentStatus';
 import SystemMetrics from './SystemMetrics';
@@ -36,11 +52,63 @@ import TradingInterface from './TradingInterface';
 import StrategyManagement from './StrategyManagement';
 import SystemMonitoring from './SystemMonitoring';
 
+interface FinancialMetrics {
+  totalPortfolioValue: number;
+  dailyPnL: number;
+  totalPnL: number;
+  winRate: number;
+  totalTrades: number;
+  openPositions: number;
+  maxDrawdown: number;
+  sharpeRatio: number;
+}
+
+interface RecentTrade {
+  id: string;
+  symbol: string;
+  side: 'buy' | 'sell';
+  quantity: number;
+  price: number;
+  timestamp: string;
+  pnl?: number;
+  status: 'completed' | 'pending' | 'cancelled';
+}
+
+interface ActivePosition {
+  symbol: string;
+  side: 'long' | 'short';
+  quantity: number;
+  entryPrice: number;
+  currentPrice: number;
+  unrealizedPnL: number;
+  unrealizedPnLPct: number;
+}
+
 const Dashboard: React.FC = () => {
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [activeComponent, setActiveComponent] = useState('dashboard');
   const theme = useTheme();
   const isMobile = useMediaQuery(theme.breakpoints.down('md'));
+
+  // Mock financial data (zeros for now)
+  const financialMetrics: FinancialMetrics = {
+    totalPortfolioValue: 0,
+    dailyPnL: 0,
+    totalPnL: 0,
+    winRate: 0,
+    totalTrades: 0,
+    openPositions: 0,
+    maxDrawdown: 0,
+    sharpeRatio: 0,
+  };
+
+  const recentTrades: RecentTrade[] = [
+    // Empty for now - will show "No recent trades" message
+  ];
+
+  const activePositions: ActivePosition[] = [
+    // Empty for now - will show "No open positions" message
+  ];
 
   const handleDrawerToggle = () => {
     setDrawerOpen(!drawerOpen);
@@ -48,12 +116,9 @@ const Dashboard: React.FC = () => {
 
   const menuItems = [
     { text: 'Dashboard', icon: <DashboardIcon />, component: 'dashboard' },
-    { text: 'Agent Management', icon: <SettingsIcon />, component: 'agents' },
     { text: 'Trading', icon: <TradingIcon />, component: 'trading' },
     { text: 'Strategy Management', icon: <AiIcon />, component: 'strategy' },
-    { text: 'System Monitoring', icon: <ChartIcon />, component: 'monitoring' },
-    { text: 'Analytics', icon: <ChartIcon />, component: 'analytics' },
-    { text: 'Settings', icon: <SettingsIcon />, component: 'settings' },
+    { text: 'Infrastructure', icon: <StorageIcon />, component: 'infrastructure' },
   ];
 
   const renderComponent = () => {
@@ -65,11 +130,8 @@ const Dashboard: React.FC = () => {
               VolexSwarm Dashboard
             </Typography>
             
-            <AgentStatus />
-            
-            <Box sx={{ mt: 4 }}>
-              <SystemMetrics />
-            </Box>
+            {/* Financial Overview */}
+            <FinancialOverview metrics={financialMetrics} trades={recentTrades} positions={activePositions} />
             
             <Box sx={{ mt: 4 }}>
               <TradingOverview />
@@ -80,34 +142,26 @@ const Dashboard: React.FC = () => {
             </Box>
           </Box>
         );
-      case 'agents':
-        return <AgentManagement />;
       case 'trading':
         return <TradingInterface />;
       case 'strategy':
         return <StrategyManagement />;
-      case 'monitoring':
-        return <SystemMonitoring />;
-      case 'analytics':
+      case 'infrastructure':
         return (
           <Box>
-            <Typography variant="h4" gutterBottom sx={{ color: 'primary.main' }}>
-              Analytics & Charts
+            <Typography variant="h4" gutterBottom sx={{ color: 'primary.main', mb: 3 }}>
+              Infrastructure & System Monitoring
             </Typography>
-            <Typography variant="body1" color="text.secondary">
-              Performance analytics and charts coming soon...
-            </Typography>
-          </Box>
-        );
-      case 'settings':
-        return (
-          <Box>
-            <Typography variant="h4" gutterBottom sx={{ color: 'primary.main' }}>
-              System Settings
-            </Typography>
-            <Typography variant="body1" color="text.secondary">
-              System configuration and management coming soon...
-            </Typography>
+            
+            <AgentStatus />
+            
+            <Box sx={{ mt: 4 }}>
+              <SystemMetrics />
+            </Box>
+            
+            <Box sx={{ mt: 4 }}>
+              <SystemMonitoring />
+            </Box>
           </Box>
         );
       default:
@@ -228,6 +282,232 @@ const Dashboard: React.FC = () => {
           {renderComponent()}
         </Container>
       </Box>
+    </Box>
+  );
+};
+
+// Financial Overview Component
+const FinancialOverview: React.FC<{
+  metrics: FinancialMetrics;
+  trades: RecentTrade[];
+  positions: ActivePosition[];
+}> = ({ metrics, trades, positions }) => {
+  return (
+    <Box>
+      <Typography variant="h5" gutterBottom sx={{ color: 'primary.main', mb: 3 }}>
+        Financial Overview
+      </Typography>
+
+      {/* Key Metrics */}
+      <Box sx={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(250px, 1fr))', gap: 3, mb: 4 }}>
+        <Card>
+          <CardContent>
+            <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+              <Box>
+                <Typography color="textSecondary" gutterBottom>
+                  Portfolio Value
+                </Typography>
+                <Typography variant="h5" component="div">
+                  ${metrics.totalPortfolioValue.toLocaleString()}
+                </Typography>
+              </Box>
+              <MoneyIcon sx={{ fontSize: 40, color: 'primary.main' }} />
+            </Box>
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardContent>
+            <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+              <Box>
+                <Typography color="textSecondary" gutterBottom>
+                  Daily P&L
+                </Typography>
+                <Typography 
+                  variant="h5" 
+                  component="div"
+                  color={metrics.dailyPnL >= 0 ? 'success.main' : 'error.main'}
+                >
+                  ${metrics.dailyPnL.toLocaleString()}
+                </Typography>
+              </Box>
+              {metrics.dailyPnL >= 0 ? (
+                <TrendingUpIcon sx={{ fontSize: 40, color: 'success.main' }} />
+              ) : (
+                <TrendingDownIcon sx={{ fontSize: 40, color: 'error.main' }} />
+              )}
+            </Box>
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardContent>
+            <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+              <Box>
+                <Typography color="textSecondary" gutterBottom>
+                  Total P&L
+                </Typography>
+                <Typography 
+                  variant="h5" 
+                  component="div"
+                  color={metrics.totalPnL >= 0 ? 'success.main' : 'error.main'}
+                >
+                  ${metrics.totalPnL.toLocaleString()}
+                </Typography>
+              </Box>
+              <ChartIcon sx={{ fontSize: 40, color: 'primary.main' }} />
+            </Box>
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardContent>
+            <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+              <Box>
+                <Typography color="textSecondary" gutterBottom>
+                  Win Rate
+                </Typography>
+                <Typography variant="h5" component="div">
+                  {metrics.winRate.toFixed(1)}%
+                </Typography>
+              </Box>
+              <CheckCircleIcon sx={{ fontSize: 40, color: 'primary.main' }} />
+            </Box>
+          </CardContent>
+        </Card>
+      </Box>
+
+      {/* Performance Metrics */}
+      <Box sx={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(400px, 1fr))', gap: 3, mb: 4 }}>
+        <Card>
+          <CardContent>
+            <Typography variant="h6" gutterBottom>
+              Performance Metrics
+            </Typography>
+            <Box sx={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+              <Box sx={{ display: 'flex', justifyContent: 'space-between' }}>
+                <Typography>Total Trades</Typography>
+                <Typography fontWeight="bold">{metrics.totalTrades}</Typography>
+              </Box>
+              <Box sx={{ display: 'flex', justifyContent: 'space-between' }}>
+                <Typography>Open Positions</Typography>
+                <Typography fontWeight="bold">{metrics.openPositions}</Typography>
+              </Box>
+              <Box sx={{ display: 'flex', justifyContent: 'space-between' }}>
+                <Typography>Max Drawdown</Typography>
+                <Typography fontWeight="bold" color="error.main">
+                  {metrics.maxDrawdown.toFixed(2)}%
+                </Typography>
+              </Box>
+              <Box sx={{ display: 'flex', justifyContent: 'space-between' }}>
+                <Typography>Sharpe Ratio</Typography>
+                <Typography fontWeight="bold">{metrics.sharpeRatio.toFixed(2)}</Typography>
+              </Box>
+            </Box>
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardContent>
+            <Typography variant="h6" gutterBottom>
+              Active Positions
+            </Typography>
+            {positions.length > 0 ? (
+              <TableContainer>
+                <Table size="small">
+                  <TableHead>
+                    <TableRow>
+                      <TableCell>Symbol</TableCell>
+                      <TableCell>Side</TableCell>
+                      <TableCell>Quantity</TableCell>
+                      <TableCell>Unrealized P&L</TableCell>
+                    </TableRow>
+                  </TableHead>
+                  <TableBody>
+                    {positions.map((position) => (
+                      <TableRow key={position.symbol}>
+                        <TableCell>{position.symbol}</TableCell>
+                        <TableCell>
+                          <Chip 
+                            label={position.side} 
+                            size="small"
+                            color={position.side === 'long' ? 'success' : 'error'}
+                          />
+                        </TableCell>
+                        <TableCell>{position.quantity}</TableCell>
+                        <TableCell color={position.unrealizedPnL >= 0 ? 'success.main' : 'error.main'}>
+                          ${position.unrealizedPnL.toFixed(2)}
+                        </TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              </TableContainer>
+            ) : (
+              <Typography color="textSecondary" sx={{ textAlign: 'center', py: 4 }}>
+                No open positions
+              </Typography>
+            )}
+          </CardContent>
+        </Card>
+      </Box>
+
+      {/* Recent Trades */}
+      <Card>
+        <CardContent>
+          <Typography variant="h6" gutterBottom>
+            Recent Trades
+          </Typography>
+          {trades.length > 0 ? (
+            <TableContainer>
+              <Table>
+                <TableHead>
+                  <TableRow>
+                    <TableCell>Time</TableCell>
+                    <TableCell>Symbol</TableCell>
+                    <TableCell>Side</TableCell>
+                    <TableCell>Quantity</TableCell>
+                    <TableCell>Price</TableCell>
+                    <TableCell>P&L</TableCell>
+                    <TableCell>Status</TableCell>
+                  </TableRow>
+                </TableHead>
+                <TableBody>
+                  {trades.map((trade) => (
+                    <TableRow key={trade.id}>
+                      <TableCell>{new Date(trade.timestamp).toLocaleString()}</TableCell>
+                      <TableCell>{trade.symbol}</TableCell>
+                      <TableCell>
+                        <Chip 
+                          label={trade.side} 
+                          size="small"
+                          color={trade.side === 'buy' ? 'success' : 'error'}
+                        />
+                      </TableCell>
+                      <TableCell>{trade.quantity}</TableCell>
+                      <TableCell>${trade.price.toFixed(2)}</TableCell>
+                      <TableCell color={trade.pnl && trade.pnl >= 0 ? 'success.main' : 'error.main'}>
+                        {trade.pnl ? `$${trade.pnl.toFixed(2)}` : '-'}
+                      </TableCell>
+                      <TableCell>
+                        <Chip 
+                          label={trade.status} 
+                          size="small"
+                          color={trade.status === 'completed' ? 'success' : 'warning'}
+                        />
+                      </TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            </TableContainer>
+          ) : (
+            <Typography color="textSecondary" sx={{ textAlign: 'center', py: 4 }}>
+              No recent trades
+            </Typography>
+          )}
+        </CardContent>
+      </Card>
     </Box>
   );
 };

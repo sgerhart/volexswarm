@@ -29,6 +29,13 @@ services:
       - db_data:/var/lib/postgresql/data
     restart: unless-stopped
 
+  redis:
+    image: redis:7-alpine
+    container_name: volexswarm-redis
+    ports:
+      - "6379:6379"
+    restart: unless-stopped
+
   research:
     build:
       context: .
@@ -138,23 +145,65 @@ services:
       - ./logs/agents:/app/logs
     restart: unless-stopped
 
-  webui:
+  risk:
     build:
-      context: ./webui/simple
-      dockerfile: Dockerfile
+      context: .
+      dockerfile: docker/risk.Dockerfile
     ports:
-      - "8005:8005"
+      - "8009:8009"
     environment:
       - VAULT_ADDR=http://vault:8200
       - VAULT_TOKEN=root
+      - DB_HOST=db
+      - DB_PORT=5432
+      - DB_NAME=volextrades
+      - DB_USER=volex
+      - DB_PASSWORD=volex_pass
     depends_on:
       - vault
+      - db
+    volumes:
+      - ./logs/agents:/app/logs
+    restart: unless-stopped
+
+  compliance:
+    build:
+      context: .
+      dockerfile: docker/compliance.Dockerfile
+    ports:
+      - "8010:8010"
+    environment:
+      - VAULT_ADDR=http://vault:8200
+      - VAULT_TOKEN=root
+      - DB_HOST=db
+      - DB_PORT=5432
+      - DB_NAME=volextrades
+      - DB_USER=volex
+      - DB_PASSWORD=volex_pass
+    depends_on:
+      - vault
+      - db
+    volumes:
+      - ./logs/agents:/app/logs
+    restart: unless-stopped
+
+  webui:
+    build:
+      context: ./webui/react-ui
+      dockerfile: Dockerfile
+    ports:
+      - "8005:80"
+    depends_on:
+      - vault
+      - db
+      - redis
       - research
       - execution
       - signal
       - meta
-    volumes:
-      - ./logs/webui:/app/logs
+      - strategy
+      - risk
+      - compliance
     restart: unless-stopped
 
 volumes:

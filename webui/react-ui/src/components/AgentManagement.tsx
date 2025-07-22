@@ -25,6 +25,7 @@ import {
   Switch,
   FormControlLabel,
 } from '@mui/material';
+import { fetchAllAgentsStatus, Agent } from '../services/agentService';
 import {
   PlayArrow as StartIcon,
   Stop as StopIcon,
@@ -36,19 +37,7 @@ import {
   Info as InfoIcon,
 } from '@mui/icons-material';
 
-interface Agent {
-  id: string;
-  name: string;
-  port: number;
-  status: 'healthy' | 'unhealthy' | 'starting' | 'stopped' | 'error';
-  lastSeen: string;
-  version: string;
-  uptime: string;
-  memory: string;
-  cpu: string;
-  endpoints: string[];
-  dependencies: string[];
-}
+
 
 const AgentManagement: React.FC = () => {
   const [agents, setAgents] = useState<Agent[]>([]);
@@ -57,139 +46,7 @@ const AgentManagement: React.FC = () => {
   const [dialogOpen, setDialogOpen] = useState(false);
   const [autoRefresh, setAutoRefresh] = useState(true);
 
-  // Define all our agents
-  const agentDefinitions: Agent[] = [
-    {
-      id: 'vault',
-      name: 'Vault',
-      port: 8200,
-      status: 'healthy',
-      lastSeen: new Date().toISOString(),
-      version: '1.15.0',
-      uptime: '2d 14h 32m',
-      memory: '45.2 MB',
-      cpu: '2.1%',
-      endpoints: ['/v1/sys/health', '/v1/sys/leader'],
-      dependencies: [],
-    },
-    {
-      id: 'db',
-      name: 'TimescaleDB',
-      port: 5432,
-      status: 'healthy',
-      lastSeen: new Date().toISOString(),
-      version: '2.11.0',
-      uptime: '2d 14h 32m',
-      memory: '156.7 MB',
-      cpu: '8.3%',
-      endpoints: ['/health', '/metrics'],
-      dependencies: [],
-    },
-    {
-      id: 'redis',
-      name: 'Redis',
-      port: 6379,
-      status: 'healthy',
-      lastSeen: new Date().toISOString(),
-      version: '7.2.0',
-      uptime: '2d 14h 32m',
-      memory: '23.1 MB',
-      cpu: '1.2%',
-      endpoints: ['PING', 'INFO'],
-      dependencies: [],
-    },
-    {
-      id: 'research',
-      name: 'Research Agent',
-      port: 8001,
-      status: 'healthy',
-      lastSeen: new Date().toISOString(),
-      version: '1.0.0',
-      uptime: '2d 14h 32m',
-      memory: '89.4 MB',
-      cpu: '12.7%',
-      endpoints: ['/health', '/research', '/sentiment'],
-      dependencies: ['vault', 'db'],
-    },
-    {
-      id: 'execution',
-      name: 'Execution Agent',
-      port: 8002,
-      status: 'healthy',
-      lastSeen: new Date().toISOString(),
-      version: '1.0.0',
-      uptime: '2d 14h 32m',
-      memory: '134.2 MB',
-      cpu: '15.8%',
-      endpoints: ['/health', '/orders', '/positions'],
-      dependencies: ['vault', 'db'],
-    },
-    {
-      id: 'signal',
-      name: 'Signal Agent',
-      port: 8003,
-      status: 'healthy',
-      lastSeen: new Date().toISOString(),
-      version: '1.0.0',
-      uptime: '2d 14h 32m',
-      memory: '167.8 MB',
-      cpu: '18.9%',
-      endpoints: ['/health', '/signals', '/indicators'],
-      dependencies: ['vault', 'db'],
-    },
-    {
-      id: 'meta',
-      name: 'Meta Agent',
-      port: 8004,
-      status: 'healthy',
-      lastSeen: new Date().toISOString(),
-      version: '1.0.0',
-      uptime: '2d 14h 32m',
-      memory: '78.3 MB',
-      cpu: '9.4%',
-      endpoints: ['/health', '/orchestrate', '/status'],
-      dependencies: ['research', 'execution', 'signal', 'strategy'],
-    },
-    {
-      id: 'strategy',
-      name: 'Strategy Agent',
-      port: 8011,
-      status: 'healthy',
-      lastSeen: new Date().toISOString(),
-      version: '1.0.0',
-      uptime: '2d 14h 32m',
-      memory: '112.6 MB',
-      cpu: '11.3%',
-      endpoints: ['/health', '/strategies', '/templates'],
-      dependencies: ['vault', 'db'],
-    },
-    {
-      id: 'risk',
-      name: 'Risk Agent',
-      port: 8009,
-      status: 'healthy',
-      lastSeen: new Date().toISOString(),
-      version: '1.0.0',
-      uptime: '2d 14h 32m',
-      memory: '95.7 MB',
-      cpu: '7.8%',
-      endpoints: ['/health', '/risk', '/limits'],
-      dependencies: ['vault', 'db'],
-    },
-    {
-      id: 'compliance',
-      name: 'Compliance Agent',
-      port: 8010,
-      status: 'healthy',
-      lastSeen: new Date().toISOString(),
-      version: '1.0.0',
-      uptime: '2d 14h 32m',
-      memory: '67.2 MB',
-      cpu: '5.2%',
-      endpoints: ['/health', '/compliance', '/audit'],
-      dependencies: ['vault', 'db'],
-    },
-  ];
+
 
   useEffect(() => {
     fetchAgentStatus();
@@ -203,17 +60,9 @@ const AgentManagement: React.FC = () => {
   const fetchAgentStatus = async () => {
     setLoading(true);
     try {
-      // Simulate fetching real agent status
-      // In production, this would make actual API calls to each agent
-      const updatedAgents: Agent[] = agentDefinitions.map(agent => ({
-        ...agent,
-        status: Math.random() > 0.1 ? 'healthy' : 'unhealthy' as const, // 90% healthy
-        lastSeen: new Date().toISOString(),
-        memory: `${Math.floor(Math.random() * 200 + 50)}.${Math.floor(Math.random() * 10)} MB`,
-        cpu: `${(Math.random() * 20 + 1).toFixed(1)}%`,
-      }));
-      
-      setAgents(updatedAgents);
+      // Fetch real agent status from actual running agents
+      const realAgents = await fetchAllAgentsStatus();
+      setAgents(realAgents);
     } catch (error) {
       console.error('Error fetching agent status:', error);
     } finally {
@@ -263,7 +112,7 @@ const AgentManagement: React.FC = () => {
       // Simulate action
       setAgents(prev => prev.map(agent => 
         agent.id === agentId 
-          ? { ...agent, status: action === 'stop' ? 'stopped' : 'starting' as const }
+          ? { ...agent, status: (action === 'stop' ? 'stopped' : 'starting') as Agent['status'] }
           : agent
       ));
       
@@ -271,7 +120,7 @@ const AgentManagement: React.FC = () => {
       setTimeout(() => {
         setAgents(prev => prev.map(agent => 
           agent.id === agentId 
-            ? { ...agent, status: action === 'stop' ? 'stopped' : 'healthy' as const }
+            ? { ...agent, status: (action === 'stop' ? 'stopped' : 'healthy') as Agent['status'] }
             : agent
         ));
       }, 2000);
@@ -315,58 +164,50 @@ const AgentManagement: React.FC = () => {
       </Box>
 
       {/* System Overview */}
-      <Grid container spacing={3} sx={{ mb: 4 }}>
-        <Grid item xs={12} md={3}>
-          <Card>
-            <CardContent>
-              <Typography color="textSecondary" gutterBottom>
-                Total Agents
-              </Typography>
-              <Typography variant="h4" sx={{ color: 'primary.main' }}>
-                {agents.length}
-              </Typography>
-            </CardContent>
-          </Card>
-        </Grid>
-        <Grid item xs={12} md={3}>
-          <Card>
-            <CardContent>
-              <Typography color="textSecondary" gutterBottom>
-                Healthy
-              </Typography>
-              <Typography variant="h4" sx={{ color: 'success.main' }}>
-                {agents.filter(a => a.status === 'healthy').length}
-              </Typography>
-            </CardContent>
-          </Card>
-        </Grid>
-        <Grid item xs={12} md={3}>
-          <Card>
-            <CardContent>
-              <Typography color="textSecondary" gutterBottom>
-                Issues
-              </Typography>
-              <Typography variant="h4" sx={{ color: 'error.main' }}>
-                {agents.filter(a => a.status !== 'healthy').length}
-              </Typography>
-            </CardContent>
-          </Card>
-        </Grid>
-        <Grid item xs={12} md={3}>
-          <Card>
-            <CardContent>
-              <Typography color="textSecondary" gutterBottom>
-                System Status
-              </Typography>
-              <Chip
-                label={agents.every(a => a.status === 'healthy') ? 'All Systems Operational' : 'Issues Detected'}
-                color={agents.every(a => a.status === 'healthy') ? 'success' : 'error'}
-                size="small"
-              />
-            </CardContent>
-          </Card>
-        </Grid>
-      </Grid>
+      <Box sx={{ display: 'flex', gap: 2, mb: 4, flexWrap: 'wrap' }}>
+        <Card sx={{ flex: 1, minWidth: 200 }}>
+          <CardContent>
+            <Typography color="textSecondary" gutterBottom>
+              Total Agents
+            </Typography>
+            <Typography variant="h4" sx={{ color: 'primary.main' }}>
+              {agents.length}
+            </Typography>
+          </CardContent>
+        </Card>
+        <Card sx={{ flex: 1, minWidth: 200 }}>
+          <CardContent>
+            <Typography color="textSecondary" gutterBottom>
+              Healthy
+            </Typography>
+            <Typography variant="h4" sx={{ color: 'success.main' }}>
+              {agents.filter(a => a.status === 'healthy').length}
+            </Typography>
+          </CardContent>
+        </Card>
+        <Card sx={{ flex: 1, minWidth: 200 }}>
+          <CardContent>
+            <Typography color="textSecondary" gutterBottom>
+              Issues
+            </Typography>
+            <Typography variant="h4" sx={{ color: 'error.main' }}>
+              {agents.filter(a => a.status !== 'healthy').length}
+            </Typography>
+          </CardContent>
+        </Card>
+        <Card sx={{ flex: 1, minWidth: 200 }}>
+          <CardContent>
+            <Typography color="textSecondary" gutterBottom>
+              System Status
+            </Typography>
+            <Chip
+              label={agents.every(a => a.status === 'healthy') ? 'All Systems Operational' : 'Issues Detected'}
+              color={agents.every(a => a.status === 'healthy') ? 'success' : 'error'}
+              size="small"
+            />
+          </CardContent>
+        </Card>
+      </Box>
 
       {/* Agents Table */}
       <Card>
@@ -472,58 +313,58 @@ const AgentManagement: React.FC = () => {
         <DialogContent>
           {selectedAgent && (
             <Box>
-              <Grid container spacing={2}>
-                <Grid item xs={6}>
+              <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 2 }}>
+                <Box sx={{ flex: 1, minWidth: 200 }}>
                   <Typography variant="subtitle2" color="textSecondary">
                     Version
                   </Typography>
                   <Typography variant="body1">{selectedAgent.version}</Typography>
-                </Grid>
-                <Grid item xs={6}>
+                </Box>
+                <Box sx={{ flex: 1, minWidth: 200 }}>
                   <Typography variant="subtitle2" color="textSecondary">
                     Port
                   </Typography>
                   <Typography variant="body1">{selectedAgent.port}</Typography>
-                </Grid>
-                <Grid item xs={6}>
+                </Box>
+                <Box sx={{ flex: 1, minWidth: 200 }}>
                   <Typography variant="subtitle2" color="textSecondary">
                     Memory Usage
                   </Typography>
                   <Typography variant="body1">{selectedAgent.memory}</Typography>
-                </Grid>
-                <Grid item xs={6}>
+                </Box>
+                <Box sx={{ flex: 1, minWidth: 200 }}>
                   <Typography variant="subtitle2" color="textSecondary">
                     CPU Usage
                   </Typography>
                   <Typography variant="body1">{selectedAgent.cpu}</Typography>
-                </Grid>
-                <Grid item xs={12}>
-                  <Typography variant="subtitle2" color="textSecondary" gutterBottom>
-                    Endpoints
-                  </Typography>
-                  <Box sx={{ display: 'flex', gap: 1, flexWrap: 'wrap' }}>
-                    {selectedAgent.endpoints.map((endpoint) => (
-                      <Chip key={endpoint} label={endpoint} size="small" />
-                    ))}
-                  </Box>
-                </Grid>
-                <Grid item xs={12}>
-                  <Typography variant="subtitle2" color="textSecondary" gutterBottom>
-                    Dependencies
-                  </Typography>
-                  <Box sx={{ display: 'flex', gap: 1, flexWrap: 'wrap' }}>
-                    {selectedAgent.dependencies.length > 0 ? (
-                      selectedAgent.dependencies.map((dep) => (
-                        <Chip key={dep} label={dep} size="small" color="primary" />
-                      ))
-                    ) : (
-                      <Typography variant="body2" color="textSecondary">
-                        No dependencies
-                      </Typography>
-                    )}
-                  </Box>
-                </Grid>
-              </Grid>
+                </Box>
+              </Box>
+              <Box sx={{ mt: 2 }}>
+                <Typography variant="subtitle2" color="textSecondary" gutterBottom>
+                  Endpoints
+                </Typography>
+                <Box sx={{ display: 'flex', gap: 1, flexWrap: 'wrap' }}>
+                  {selectedAgent.endpoints.map((endpoint) => (
+                    <Chip key={endpoint} label={endpoint} size="small" />
+                  ))}
+                </Box>
+              </Box>
+              <Box sx={{ mt: 2 }}>
+                <Typography variant="subtitle2" color="textSecondary" gutterBottom>
+                  Dependencies
+                </Typography>
+                <Box sx={{ display: 'flex', gap: 1, flexWrap: 'wrap' }}>
+                  {selectedAgent.dependencies.length > 0 ? (
+                    selectedAgent.dependencies.map((dep) => (
+                      <Chip key={dep} label={dep} size="small" color="primary" />
+                    ))
+                  ) : (
+                    <Typography variant="body2" color="textSecondary">
+                      No dependencies
+                    </Typography>
+                  )}
+                </Box>
+              </Box>
             </Box>
           )}
         </DialogContent>

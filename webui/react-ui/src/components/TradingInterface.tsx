@@ -213,62 +213,54 @@ const TradingInterface: React.FC = () => {
       </Box>
 
       {/* Account Overview */}
-      <Grid container spacing={3} sx={{ mb: 4 }}>
-        <Grid item xs={12} md={3}>
-          <Card>
-            <CardContent>
-              <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-                <BalanceIcon color="primary" />
-                <Typography color="textSecondary" gutterBottom>
-                  Total Balance
-                </Typography>
-              </Box>
-              <Typography variant="h4" sx={{ color: 'primary.main' }}>
-                ${balances.reduce((sum, b) => sum + b.total, 0).toLocaleString()}
-              </Typography>
-            </CardContent>
-          </Card>
-        </Grid>
-        <Grid item xs={12} md={3}>
-          <Card>
-            <CardContent>
-              <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-                <ProfitIcon color="success" />
-                <Typography color="textSecondary" gutterBottom>
-                  Total P&L
-                </Typography>
-              </Box>
-              <Typography variant="h4" sx={{ color: 'success.main' }}>
-                ${positions.reduce((sum, p) => sum + p.unrealizedPnl + p.realizedPnl, 0).toFixed(2)}
-              </Typography>
-            </CardContent>
-          </Card>
-        </Grid>
-        <Grid item xs={12} md={3}>
-          <Card>
-            <CardContent>
+      <Box sx={{ display: 'flex', gap: 2, mb: 4, flexWrap: 'wrap' }}>
+        <Card sx={{ flex: 1, minWidth: 200 }}>
+          <CardContent>
+            <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+              <BalanceIcon color="primary" />
               <Typography color="textSecondary" gutterBottom>
-                Open Positions
+                Total Balance
               </Typography>
-              <Typography variant="h4" sx={{ color: 'warning.main' }}>
-                {positions.length}
-              </Typography>
-            </CardContent>
-          </Card>
-        </Grid>
-        <Grid item xs={12} md={3}>
-          <Card>
-            <CardContent>
+            </Box>
+            <Typography variant="h4" sx={{ color: 'primary.main' }}>
+              ${balances.reduce((sum, b) => sum + b.total, 0).toLocaleString()}
+            </Typography>
+          </CardContent>
+        </Card>
+        <Card sx={{ flex: 1, minWidth: 200 }}>
+          <CardContent>
+            <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+              <ProfitIcon color="success" />
               <Typography color="textSecondary" gutterBottom>
-                Active Orders
+                Total P&L
               </Typography>
-              <Typography variant="h4" sx={{ color: 'info.main' }}>
-                {trades.filter(t => t.status === 'open').length}
-              </Typography>
-            </CardContent>
-          </Card>
-        </Grid>
-      </Grid>
+            </Box>
+            <Typography variant="h4" sx={{ color: 'success.main' }}>
+              ${positions.reduce((sum, p) => sum + p.unrealizedPnl + p.realizedPnl, 0).toFixed(2)}
+            </Typography>
+          </CardContent>
+        </Card>
+        <Card sx={{ flex: 1, minWidth: 200 }}>
+          <CardContent>
+            <Typography color="textSecondary" gutterBottom>
+              Open Positions
+            </Typography>
+            <Typography variant="h4" sx={{ color: 'warning.main' }}>
+              {positions.length}
+            </Typography>
+          </CardContent>
+        </Card>
+        <Card sx={{ flex: 1, minWidth: 200 }}>
+          <CardContent>
+            <Typography color="textSecondary" gutterBottom>
+              Active Orders
+            </Typography>
+            <Typography variant="h4" sx={{ color: 'info.main' }}>
+              {trades.filter(t => t.status === 'open').length}
+            </Typography>
+          </CardContent>
+        </Card>
+      </Box>
 
       {/* Trading Tabs */}
       <Card>
@@ -461,36 +453,32 @@ const TradingInterface: React.FC = () => {
       <Dialog open={newOrderDialog} onClose={() => setNewOrderDialog(false)} maxWidth="sm" fullWidth>
         <DialogTitle>New Order</DialogTitle>
         <DialogContent>
-          <Grid container spacing={2} sx={{ mt: 1 }}>
-            <Grid item xs={12}>
-              <FormControl fullWidth>
-                <InputLabel>Symbol</InputLabel>
-                <Select
-                  value={selectedSymbol}
-                  onChange={(e) => setSelectedSymbol(e.target.value)}
-                  label="Symbol"
-                >
-                  <MenuItem value="BTC/USD">BTC/USD</MenuItem>
-                  <MenuItem value="ETH/USD">ETH/USD</MenuItem>
-                  <MenuItem value="ADA/USD">ADA/USD</MenuItem>
-                  <MenuItem value="SOL/USD">SOL/USD</MenuItem>
-                </Select>
-              </FormControl>
-            </Grid>
-            <Grid item xs={12}>
-              <FormControl fullWidth>
-                <InputLabel>Side</InputLabel>
-                <Select
-                  value={orderSide}
-                  onChange={(e) => setOrderSide(e.target.value as 'buy' | 'sell')}
-                  label="Side"
-                >
-                  <MenuItem value="buy">Buy</MenuItem>
-                  <MenuItem value="sell">Sell</MenuItem>
-                </Select>
-              </FormControl>
-            </Grid>
-            <Grid item xs={6}>
+          <Box sx={{ display: 'flex', flexDirection: 'column', gap: 2, mt: 1 }}>
+            <FormControl fullWidth>
+              <InputLabel>Symbol</InputLabel>
+              <Select
+                value={selectedSymbol}
+                onChange={(e) => setSelectedSymbol(e.target.value)}
+                label="Symbol"
+              >
+                <MenuItem value="BTC/USD">BTC/USD</MenuItem>
+                <MenuItem value="ETH/USD">ETH/USD</MenuItem>
+                <MenuItem value="ADA/USD">ADA/USD</MenuItem>
+                <MenuItem value="SOL/USD">SOL/USD</MenuItem>
+              </Select>
+            </FormControl>
+            <FormControl fullWidth>
+              <InputLabel>Side</InputLabel>
+              <Select
+                value={orderSide}
+                onChange={(e) => setOrderSide(e.target.value as 'buy' | 'sell')}
+                label="Side"
+              >
+                <MenuItem value="buy">Buy</MenuItem>
+                <MenuItem value="sell">Sell</MenuItem>
+              </Select>
+            </FormControl>
+            <Box sx={{ display: 'flex', gap: 2 }}>
               <TextField
                 fullWidth
                 label="Quantity"
@@ -498,8 +486,6 @@ const TradingInterface: React.FC = () => {
                 value={orderQuantity}
                 onChange={(e) => setOrderQuantity(e.target.value)}
               />
-            </Grid>
-            <Grid item xs={6}>
               <TextField
                 fullWidth
                 label="Price"
@@ -507,8 +493,8 @@ const TradingInterface: React.FC = () => {
                 value={orderPrice}
                 onChange={(e) => setOrderPrice(e.target.value)}
               />
-            </Grid>
-          </Grid>
+            </Box>
+          </Box>
         </DialogContent>
         <DialogActions>
           <Button onClick={() => setNewOrderDialog(false)}>Cancel</Button>
