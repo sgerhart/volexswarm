@@ -9,14 +9,15 @@ import logging
 import asyncio
 import aiohttp
 from datetime import datetime, timedelta
-from typing import Dict, Any, Optional, List, Tuple
+from typing import Dict, Any, Optional, List, Tuple, Set
 from fastapi import FastAPI, HTTPException, BackgroundTasks, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel
 from fastapi.middleware.cors import CORSMiddleware
 import uvicorn
 import json
 import re
-from dataclasses import dataclass
+import uuid
+from dataclasses import dataclass, asdict
 from enum import Enum
 
 # Add the parent directory to the path
@@ -49,12 +50,235 @@ db_client = None
 AGENT_ENDPOINTS = {
     "research": "http://research:8000",
     "execution": "http://execution:8002", 
-    "signal": "http://signal:8003"
+    "signal": "http://signal:8003",
+    "strategy": "http://strategy:8011",
+    "backtest": "http://backtest:8008",
+    "optimize": "http://optimize:8006",
+    "monitor": "http://monitor:8007",
+    "risk": "http://risk:8009",
+    "compliance": "http://compliance:8010"
 }
 
-# WebSocket connections for real-time updates
-websocket_connections: List[WebSocket] = []
+# Enhanced WebSocket connection management
+@dataclass
+class WebSocketConnection:
+    """Enhanced WebSocket connection with metadata."""
+    id: str
+    websocket: WebSocket
+    user_id: Optional[str] = None
+    subscriptions: Set[str] = None
+    connected_at: datetime = None
+    last_ping: datetime = None
+    
+    def __post_init__(self):
+        if self.subscriptions is None:
+            self.subscriptions = set()
+        if self.connected_at is None:
+            self.connected_at = datetime.now()
+        if self.last_ping is None:
+            self.last_ping = datetime.now()
 
+class MessageType(Enum):
+    """WebSocket message types."""
+    COMMAND = "command"
+    AGENT_STATUS = "agent_status"
+    SYSTEM_METRICS = "system_metrics"
+    TRADE_UPDATE = "trade_update"
+    SIGNAL_UPDATE = "signal_update"
+    TASK_PROGRESS = "task_progress"
+    NOTIFICATION = "notification"
+    PING = "ping"
+    PONG = "pong"
+    SUBSCRIBE = "subscribe"
+    UNSUBSCRIBE = "unsubscribe"
+    ERROR = "error"
+
+@dataclass
+class WebSocketMessage:
+    """Structured WebSocket message."""
+    type: MessageType
+    data: Dict[str, Any]
+    timestamp: datetime = None
+    id: str = None
+    
+    def __post_init__(self):
+        if self.timestamp is None:
+            self.timestamp = datetime.now()
+        if self.id is None:
+            self.id = str(uuid.uuid4())
+    
+    def to_json(self) -> str:
+        """Convert message to JSON string."""
+        message_dict = {
+            "type": self.type.value,
+            "data": self.data,
+            "timestamp": self.timestamp.isoformat(),
+            "id": self.id
+        }
+        return json.dumps(message_dict)
+
+class WebSocketManager:
+    """Enhanced WebSocket connection manager."""
+    
+    def __init__(self):
+        self.connections: Dict[str, WebSocketConnection] = {}
+        self.subscriptions: Dict[str, Set[str]] = {}  # topic -> connection_ids
+        self.heartbeat_interval = 30  # seconds
+        self.heartbeat_task = None
+        
+    async def start_heartbeat(self):
+        """Start heartbeat monitoring."""
+        self.heartbeat_task = asyncio.create_task(self._heartbeat_loop())
+    
+    async def stop_heartbeat(self):
+        """Stop heartbeat monitoring."""
+        if self.heartbeat_task:
+            self.heartbeat_task.cancel()
+    
+    async def _heartbeat_loop(self):
+        """Heartbeat loop to monitor connections."""
+        while True:
+            try:
+                await asyncio.sleep(self.heartbeat_interval)
+                await self._ping_all_connections()
+                await self._cleanup_stale_connections()
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logger.error(f"Heartbeat error: {e}")
+    
+    async def _ping_all_connections(self):
+        """Send ping to all connections."""
+        ping_message = WebSocketMessage(
+            type=MessageType.PING,
+            data={"timestamp": datetime.now().isoformat()}
+        )
+        await self.broadcast_to_all(ping_message)
+    
+    async def _cleanup_stale_connections(self):
+        """Remove stale connections."""
+        cutoff_time = datetime.now() - timedelta(seconds=self.heartbeat_interval * 3)
+        stale_connections = [
+            conn_id for conn_id, conn in self.connections.items()
+            if conn.last_ping < cutoff_time
+        ]
+        
+        for conn_id in stale_connections:
+            await self.disconnect(conn_id)
+    
+    async def connect(self, websocket: WebSocket, user_id: Optional[str] = None) -> str:
+        """Add new WebSocket connection."""
+        connection_id = str(uuid.uuid4())
+        connection = WebSocketConnection(
+            id=connection_id,
+            websocket=websocket,
+            user_id=user_id
+        )
+        
+        await websocket.accept()
+        self.connections[connection_id] = connection
+        
+        # Send welcome message
+        welcome_message = WebSocketMessage(
+            type=MessageType.NOTIFICATION,
+            data={
+                "message": "Connected to VolexSwarm Meta-Agent",
+                "connection_id": connection_id,
+                "server_time": datetime.now().isoformat()
+            }
+        )
+        await self.send_to_connection(connection_id, welcome_message)
+        
+        logger.info(f"WebSocket connection established: {connection_id}")
+        return connection_id
+    
+    async def disconnect(self, connection_id: str):
+        """Remove WebSocket connection."""
+        if connection_id in self.connections:
+            # Remove from all subscriptions
+            for topic in list(self.subscriptions.keys()):
+                self.subscriptions[topic].discard(connection_id)
+                if not self.subscriptions[topic]:
+                    del self.subscriptions[topic]
+            
+            # Close WebSocket if still open
+            connection = self.connections[connection_id]
+            try:
+                await connection.websocket.close()
+            except:
+                pass
+            
+            del self.connections[connection_id]
+            logger.info(f"WebSocket connection closed: {connection_id}")
+    
+    async def send_to_connection(self, connection_id: str, message: WebSocketMessage):
+        """Send message to specific connection."""
+        if connection_id in self.connections:
+            try:
+                connection = self.connections[connection_id]
+                await connection.websocket.send_text(message.to_json())
+                connection.last_ping = datetime.now()
+            except Exception as e:
+                logger.error(f"Failed to send message to {connection_id}: {e}")
+                await self.disconnect(connection_id)
+    
+    async def broadcast_to_all(self, message: WebSocketMessage):
+        """Broadcast message to all connections."""
+        if not self.connections:
+            return
+        
+        failed_connections = []
+        for connection_id in self.connections:
+            try:
+                await self.send_to_connection(connection_id, message)
+            except:
+                failed_connections.append(connection_id)
+        
+        # Clean up failed connections
+        for conn_id in failed_connections:
+            await self.disconnect(conn_id)
+    
+    async def broadcast_to_topic(self, topic: str, message: WebSocketMessage):
+        """Broadcast message to subscribers of a topic."""
+        if topic not in self.subscriptions:
+            return
+        
+        subscribers = list(self.subscriptions[topic])
+        for connection_id in subscribers:
+            await self.send_to_connection(connection_id, message)
+    
+    def subscribe(self, connection_id: str, topic: str):
+        """Subscribe connection to a topic."""
+        if connection_id in self.connections:
+            if topic not in self.subscriptions:
+                self.subscriptions[topic] = set()
+            self.subscriptions[topic].add(connection_id)
+            
+            # Add to connection's subscription list
+            self.connections[connection_id].subscriptions.add(topic)
+            logger.info(f"Connection {connection_id} subscribed to {topic}")
+    
+    def unsubscribe(self, connection_id: str, topic: str):
+        """Unsubscribe connection from a topic."""
+        if topic in self.subscriptions:
+            self.subscriptions[topic].discard(connection_id)
+            if not self.subscriptions[topic]:
+                del self.subscriptions[topic]
+        
+        if connection_id in self.connections:
+            self.connections[connection_id].subscriptions.discard(topic)
+            logger.info(f"Connection {connection_id} unsubscribed from {topic}")
+    
+    def get_connection_count(self) -> int:
+        """Get total number of active connections."""
+        return len(self.connections)
+    
+    def get_topic_subscribers(self, topic: str) -> int:
+        """Get number of subscribers for a topic."""
+        return len(self.subscriptions.get(topic, set()))
+
+# Global WebSocket manager
+ws_manager = WebSocketManager()
 
 class CommandRequest(BaseModel):
     """Request model for natural language commands."""
@@ -224,15 +448,67 @@ class AgentCoordinator:
         self.nlp = NaturalLanguageProcessor()
         self.session = None
         self.active_monitors = {}
+        self.agent_status_task = None
+        self.system_metrics_task = None
     
     async def initialize(self):
         """Initialize HTTP session for agent communication."""
         self.session = aiohttp.ClientSession()
+        # Start background tasks for real-time data streaming
+        self.agent_status_task = asyncio.create_task(self._stream_agent_status())
+        self.system_metrics_task = asyncio.create_task(self._stream_system_metrics())
     
     async def close(self):
-        """Close HTTP session."""
+        """Close HTTP session and background tasks."""
+        if self.agent_status_task:
+            self.agent_status_task.cancel()
+        if self.system_metrics_task:
+            self.system_metrics_task.cancel()
         if self.session:
             await self.session.close()
+    
+    async def _stream_agent_status(self):
+        """Background task to stream agent status updates."""
+        while True:
+            try:
+                status = await self.get_system_status()
+                message = WebSocketMessage(
+                    type=MessageType.AGENT_STATUS,
+                    data=status
+                )
+                await ws_manager.broadcast_to_topic("agent_status", message)
+                await asyncio.sleep(10)  # Update every 10 seconds
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logger.error(f"Agent status streaming error: {e}")
+                await asyncio.sleep(30)  # Wait longer on error
+    
+    async def _stream_system_metrics(self):
+        """Background task to stream system metrics."""
+        while True:
+            try:
+                # Get system metrics (placeholder - implement actual metrics collection)
+                metrics = {
+                    "cpu_usage": 45.2,
+                    "memory_usage": 62.8,
+                    "disk_usage": 23.1,
+                    "network_io": {"in": 1024000, "out": 512000},
+                    "active_connections": ws_manager.get_connection_count(),
+                    "timestamp": datetime.now().isoformat()
+                }
+                
+                message = WebSocketMessage(
+                    type=MessageType.SYSTEM_METRICS,
+                    data=metrics
+                )
+                await ws_manager.broadcast_to_topic("system_metrics", message)
+                await asyncio.sleep(5)  # Update every 5 seconds
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logger.error(f"System metrics streaming error: {e}")
+                await asyncio.sleep(30)
     
     async def get_agent_health(self, agent_name: str) -> Dict[str, Any]:
         """Get health status of a specific agent."""
@@ -277,6 +553,7 @@ class AgentCoordinator:
                 "agents": agent_status,
                 "database": {"status": "healthy" if db_healthy else "unhealthy"},
                 "vault": {"status": "healthy" if vault_healthy else "unhealthy"},
+                "websocket_connections": ws_manager.get_connection_count(),
                 "autonomous_mode": True
             }
         except Exception as e:
@@ -368,6 +645,19 @@ class AgentCoordinator:
                 async with self.session.post(trade_url, params=trade_params) as response:
                     if response.status == 200:
                         trade_data = await response.json()
+                        
+                        # Broadcast trade update
+                        trade_message = WebSocketMessage(
+                            type=MessageType.TRADE_UPDATE,
+                            data={
+                                "symbol": symbol,
+                                "action": "executed",
+                                "trade": trade_data,
+                                "decision": decision
+                            }
+                        )
+                        await ws_manager.broadcast_to_topic("trade_updates", trade_message)
+                        
                         return {
                             "agent": "meta",
                             "symbol": symbol,
@@ -432,19 +722,36 @@ class AgentCoordinator:
                         decision_data = await response.json()
                         decision = decision_data.get("decision", {})
                         
+                        # Broadcast monitoring update
+                        monitor_message = WebSocketMessage(
+                            type=MessageType.TASK_PROGRESS,
+                            data={
+                                "type": "monitor_update",
+                                "monitor_id": monitor_id,
+                                "symbol": symbol,
+                                "decision": decision
+                            }
+                        )
+                        await ws_manager.broadcast_to_topic("task_progress", monitor_message)
+                        
                         # Check if action should be taken
                         if decision.get("confidence", 0) > 0.8:  # High confidence threshold for monitoring
                             # Execute trade
-                            await self.execute_trade(symbol, decision.get("action", "hold"))
+                            trade_result = await self.execute_trade(symbol, decision.get("action", "hold"))
                             
                             # Notify via WebSocket
-                            await self._notify_websocket_clients({
-                                "type": "monitor_alert",
-                                "monitor_id": monitor_id,
-                                "symbol": symbol,
-                                "decision": decision,
-                                "timestamp": datetime.now().isoformat()
-                            })
+                            alert_message = WebSocketMessage(
+                                type=MessageType.NOTIFICATION,
+                                data={
+                                    "type": "monitor_alert",
+                                    "monitor_id": monitor_id,
+                                    "symbol": symbol,
+                                    "decision": decision,
+                                    "trade_result": trade_result,
+                                    "timestamp": datetime.now().isoformat()
+                                }
+                            )
+                            await ws_manager.broadcast_to_topic("notifications", alert_message)
                 
                 # Wait before next check
                 await asyncio.sleep(300)  # Check every 5 minutes
@@ -452,16 +759,6 @@ class AgentCoordinator:
         except Exception as e:
             logger.error(f"Monitoring failed for {symbol}: {e}")
             self.active_monitors[monitor_id]["active"] = False
-    
-    async def _notify_websocket_clients(self, message: Dict[str, Any]):
-        """Notify WebSocket clients of updates."""
-        if websocket_connections:
-            message_json = json.dumps(message)
-            for connection in websocket_connections[:]:  # Copy list to avoid modification during iteration
-                try:
-                    await connection.send_text(message_json)
-                except:
-                    websocket_connections.remove(connection)
 
 
 # Global coordinator
@@ -488,6 +785,10 @@ async def startup_event():
             await coordinator.initialize()
             logger.info("Agent coordinator initialized successfully")
             
+            # Start WebSocket manager heartbeat
+            await ws_manager.start_heartbeat()
+            logger.info("WebSocket manager started successfully")
+            
             logger.info("Meta agent initialized successfully")
         
     except Exception as e:
@@ -501,6 +802,7 @@ async def shutdown_event():
     global coordinator
     if coordinator:
         await coordinator.close()
+    await ws_manager.stop_heartbeat()
 
 
 @app.get("/health")
@@ -510,14 +812,16 @@ def health_check():
         vault_healthy = vault_client.health_check() if vault_client else False
         db_healthy = db_health_check() if db_client else False
         coordinator_ready = coordinator is not None
+        websocket_healthy = ws_manager.get_connection_count() >= 0
         
-        overall_healthy = vault_healthy and db_healthy and coordinator_ready
+        overall_healthy = vault_healthy and db_healthy and coordinator_ready and websocket_healthy
         
         return {
             "status": "healthy" if overall_healthy else "unhealthy",
             "vault_connected": vault_healthy,
             "database_connected": db_healthy,
             "coordinator_ready": coordinator_ready,
+            "websocket_connections": ws_manager.get_connection_count(),
             "agent": "meta"
         }
     except Exception as e:
@@ -636,28 +940,79 @@ async def process_command(request: CommandRequest):
 
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
-    """WebSocket endpoint for real-time updates."""
-    await websocket.accept()
-    websocket_connections.append(websocket)
+    """Enhanced WebSocket endpoint for real-time updates."""
+    connection_id = await ws_manager.connect(websocket)
     
     try:
         while True:
-            # Keep connection alive and handle incoming messages
+            # Receive message from client
             data = await websocket.receive_text()
-            message = json.loads(data)
+            message_data = json.loads(data)
             
-            # Process WebSocket commands
-            if message.get("type") == "command":
-                command = message.get("command", "")
+            message_type = MessageType(message_data.get("type", "command"))
+            
+            if message_type == MessageType.COMMAND:
+                # Process command and send response
+                command = message_data.get("data", {}).get("command", "")
                 result = await process_command(CommandRequest(command=command))
-                await websocket.send_text(json.dumps(result))
+                
+                response_message = WebSocketMessage(
+                    type=MessageType.COMMAND,
+                    data=result
+                )
+                await ws_manager.send_to_connection(connection_id, response_message)
+            
+            elif message_type == MessageType.SUBSCRIBE:
+                # Subscribe to topic
+                topic = message_data.get("data", {}).get("topic", "")
+                if topic:
+                    ws_manager.subscribe(connection_id, topic)
+                    
+                    ack_message = WebSocketMessage(
+                        type=MessageType.NOTIFICATION,
+                        data={"message": f"Subscribed to {topic}"}
+                    )
+                    await ws_manager.send_to_connection(connection_id, ack_message)
+            
+            elif message_type == MessageType.UNSUBSCRIBE:
+                # Unsubscribe from topic
+                topic = message_data.get("data", {}).get("topic", "")
+                if topic:
+                    ws_manager.unsubscribe(connection_id, topic)
+                    
+                    ack_message = WebSocketMessage(
+                        type=MessageType.NOTIFICATION,
+                        data={"message": f"Unsubscribed from {topic}"}
+                    )
+                    await ws_manager.send_to_connection(connection_id, ack_message)
+            
+            elif message_type == MessageType.PONG:
+                # Update last ping time
+                if connection_id in ws_manager.connections:
+                    ws_manager.connections[connection_id].last_ping = datetime.now()
+            
+            # Update connection's last activity
+            if connection_id in ws_manager.connections:
+                ws_manager.connections[connection_id].last_ping = datetime.now()
             
     except WebSocketDisconnect:
-        websocket_connections.remove(websocket)
+        await ws_manager.disconnect(connection_id)
     except Exception as e:
-        logger.error("WebSocket error", {"error": str(e)})
-        if websocket in websocket_connections:
-            websocket_connections.remove(websocket)
+        logger.error(f"WebSocket error for {connection_id}: {e}")
+        await ws_manager.disconnect(connection_id)
+
+
+@app.get("/websocket/stats")
+async def get_websocket_stats():
+    """Get WebSocket connection statistics."""
+    return {
+        "total_connections": ws_manager.get_connection_count(),
+        "topics": {
+            topic: ws_manager.get_topic_subscribers(topic) 
+            for topic in ws_manager.subscriptions.keys()
+        },
+        "timestamp": datetime.now().isoformat()
+    }
 
 
 @app.get("/agents/{agent_name}/health")

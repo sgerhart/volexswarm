@@ -19,311 +19,357 @@ import {
   NetworkCheck as NetworkIcon,
   Refresh as RefreshIcon,
   TrendingUp as TrendingUpIcon,
+  Wifi as ConnectedIcon,
+  WifiOff as DisconnectedIcon,
+  Sync as SyncIcon,
 } from '@mui/icons-material';
+import { 
+  useSystemMetrics, 
+  useWebSocketConnection,
+  useRealTimeData 
+} from '../hooks/useWebSocket';
 import { fetchSystemMetrics, fetchDockerStats, SystemMetrics as SystemMetricsType, DockerStats } from '../services/systemService';
 
 const SystemMetrics: React.FC = () => {
-  const [systemMetrics, setSystemMetrics] = useState<SystemMetricsType | null>(null);
+  // Real-time WebSocket connection status
+  const { isConnected, isReconnecting, connectionId } = useWebSocketConnection();
+  
+  // Real-time system metrics with HTTP fallback
+  const { 
+    data: systemMetrics, 
+    loading: metricsLoading, 
+    error: metricsError,
+    source: metricsSource,
+    isRealTime: metricsRealTime
+  } = useRealTimeData(
+    'system_metrics',
+    fetchSystemMetrics,
+    15000 // 15 second polling fallback
+  );
+
+  // Separate state for Docker stats (still using HTTP for now)
   const [dockerStats, setDockerStats] = useState<DockerStats | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+  const [dockerLoading, setDockerLoading] = useState(false);
+  const [dockerError, setDockerError] = useState<string | null>(null);
   const [lastUpdated, setLastUpdated] = useState<Date>(new Date());
   const [autoRefresh, setAutoRefresh] = useState(true);
 
-  const fetchData = async () => {
+  // Fetch Docker stats separately (can be enhanced to WebSocket later)
+  const fetchDockerData = async () => {
     try {
-      setLoading(true);
-      setError(null);
-      
-      const [metrics, docker] = await Promise.all([
-        fetchSystemMetrics(),
-        fetchDockerStats()
-      ]);
-      
-      setSystemMetrics(metrics);
+      setDockerLoading(true);
+      setDockerError(null);
+      const docker = await fetchDockerStats();
       setDockerStats(docker);
       setLastUpdated(new Date());
     } catch (err) {
-      setError('Failed to fetch system metrics');
-      console.error('Error fetching system metrics:', err);
+      setDockerError('Failed to fetch Docker stats');
+      console.error('Error fetching Docker stats:', err);
     } finally {
-      setLoading(false);
+      setDockerLoading(false);
     }
   };
 
   useEffect(() => {
-    fetchData();
+    fetchDockerData();
   }, []);
 
   useEffect(() => {
     if (!autoRefresh) return;
 
     const interval = setInterval(() => {
-      fetchData();
-    }, 15000); // Poll every 15 seconds
+      fetchDockerData();
+    }, 30000); // Poll Docker stats every 30 seconds
 
     return () => clearInterval(interval);
   }, [autoRefresh]);
 
   const handleRefresh = () => {
-    fetchData();
+    fetchDockerData();
   };
 
   const handleToggleAutoRefresh = () => {
     setAutoRefresh(!autoRefresh);
   };
 
-  const formatBytes = (bytes: number) => {
-    if (bytes === 0) return '0 B';
+  const getProgressColor = (value: number): "primary" | "secondary" | "error" | "warning" | "info" | "success" => {
+    if (value >= 90) return 'error';
+    if (value >= 70) return 'warning';
+    if (value >= 50) return 'info';
+    return 'success';
+  };
+
+  const formatBytes = (bytes: number): string => {
+    if (bytes === 0) return '0 Bytes';
     const k = 1024;
-    const sizes = ['B', 'KB', 'MB', 'GB'];
+    const sizes = ['Bytes', 'KB', 'MB', 'GB', 'TB'];
     const i = Math.floor(Math.log(bytes) / Math.log(k));
     return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
   };
 
-  const formatUptime = (seconds: number) => {
-    const hours = Math.floor(seconds / 3600);
+  const formatUptime = (seconds: number): string => {
+    const days = Math.floor(seconds / 86400);
+    const hours = Math.floor((seconds % 86400) / 3600);
     const minutes = Math.floor((seconds % 3600) / 60);
-    return `${hours}h ${minutes}m`;
+    
+    if (days > 0) return `${days}d ${hours}h ${minutes}m`;
+    if (hours > 0) return `${hours}h ${minutes}m`;
+    return `${minutes}m`;
   };
-
-  if (loading && !systemMetrics) {
-    return (
-      <Card>
-        <CardContent>
-          <Box sx={{ display: 'flex', justifyContent: 'center', py: 4 }}>
-            <CircularProgress />
-          </Box>
-        </CardContent>
-      </Card>
-    );
-  }
 
   return (
     <Box>
       <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 3 }}>
-        <Typography variant="h5" gutterBottom>
+        <Typography variant="h4" sx={{ color: 'primary.main' }}>
           System Metrics
         </Typography>
-        <Box sx={{ display: 'flex', gap: 1, alignItems: 'center' }}>
-          <Typography variant="caption" color="textSecondary">
-            Last updated: {lastUpdated.toLocaleTimeString()}
-          </Typography>
-          <Button
+        
+        {/* Connection Status Indicator */}
+        <Box sx={{ display: 'flex', alignItems: 'center', gap: 2 }}>
+          <Chip
+            icon={isConnected ? <ConnectedIcon /> : isReconnecting ? <SyncIcon /> : <DisconnectedIcon />}
+            label={
+              isConnected 
+                ? `Real-time (${connectionId?.slice(-8)})` 
+                : isReconnecting 
+                  ? 'Reconnecting...' 
+                  : 'Offline'
+            }
+            color={isConnected ? 'success' : isReconnecting ? 'warning' : 'error'}
             size="small"
-            variant={autoRefresh ? 'contained' : 'outlined'}
+          />
+          
+          <Chip
+            label={metricsRealTime ? 'Live Data' : 'Polling Mode'}
+            color={metricsRealTime ? 'primary' : 'secondary'}
+            size="small"
+          />
+          
+          <Button
+            variant="outlined"
+            size="small"
             onClick={handleToggleAutoRefresh}
+            color={autoRefresh ? 'primary' : 'secondary'}
           >
-            {autoRefresh ? 'Auto Refresh ON' : 'Auto Refresh OFF'}
+            {autoRefresh ? 'Auto-Refresh ON' : 'Auto-Refresh OFF'}
           </Button>
-          <IconButton onClick={handleRefresh} disabled={loading}>
+          
+          <IconButton onClick={handleRefresh} disabled={metricsLoading || dockerLoading}>
             <RefreshIcon />
           </IconButton>
         </Box>
       </Box>
 
-      {error && (
+      {/* Error Display */}
+      {(metricsError || dockerError) && (
         <Alert severity="error" sx={{ mb: 2 }}>
-          {error}
+          {metricsError && `Metrics: ${metricsError}`}
+          {metricsError && dockerError && ' | '}
+          {dockerError && `Docker: ${dockerError}`}
         </Alert>
       )}
 
-      {systemMetrics && (
-        <Box sx={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(250px, 1fr))', gap: 3, mb: 4 }}>
-          <Card>
+      {/* System Metrics Grid */}
+      <Grid container spacing={3}>
+        {/* CPU Usage */}
+        <Grid item xs={12} md={6} lg={3}>
+          <Card sx={{ height: '100%' }}>
             <CardContent>
-              <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mb: 2 }}>
-                <Typography color="textSecondary" gutterBottom>
-                  CPU Usage
-                </Typography>
-                <CpuIcon sx={{ fontSize: 40, color: 'primary.main' }} />
+              <Box sx={{ display: 'flex', alignItems: 'center', mb: 2 }}>
+                <CpuIcon color="primary" sx={{ mr: 1 }} />
+                <Typography variant="h6">CPU Usage</Typography>
+                {metricsRealTime && (
+                  <TrendingUpIcon color="success" sx={{ ml: 'auto', fontSize: 16 }} />
+                )}
               </Box>
-              <Typography variant="h4" component="div" sx={{ mb: 1 }}>
-                {systemMetrics.cpu_usage.toFixed(1)}%
-              </Typography>
-              <LinearProgress 
-                variant="determinate" 
-                value={systemMetrics.cpu_usage} 
-                sx={{ height: 8, borderRadius: 4 }}
-                color={systemMetrics.cpu_usage > 80 ? 'error' : systemMetrics.cpu_usage > 60 ? 'warning' : 'primary'}
-              />
+              
+              {metricsLoading ? (
+                <CircularProgress size={24} />
+              ) : (
+                <>
+                  <Typography variant="h4" sx={{ mb: 1, color: 'primary.main' }}>
+                    {systemMetrics?.cpu_usage?.toFixed(1) || 0}%
+                  </Typography>
+                  <LinearProgress
+                    variant="determinate"
+                    value={systemMetrics?.cpu_usage || 0}
+                    color={getProgressColor(systemMetrics?.cpu_usage || 0)}
+                    sx={{ height: 8, borderRadius: 1 }}
+                  />
+                </>
+              )}
             </CardContent>
           </Card>
+        </Grid>
 
-          <Card>
+        {/* Memory Usage */}
+        <Grid item xs={12} md={6} lg={3}>
+          <Card sx={{ height: '100%' }}>
             <CardContent>
-              <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mb: 2 }}>
-                <Typography color="textSecondary" gutterBottom>
-                  Memory Usage
-                </Typography>
-                <MemoryIcon sx={{ fontSize: 40, color: 'primary.main' }} />
+              <Box sx={{ display: 'flex', alignItems: 'center', mb: 2 }}>
+                <MemoryIcon color="primary" sx={{ mr: 1 }} />
+                <Typography variant="h6">Memory Usage</Typography>
+                {metricsRealTime && (
+                  <TrendingUpIcon color="success" sx={{ ml: 'auto', fontSize: 16 }} />
+                )}
               </Box>
-              <Typography variant="h4" component="div" sx={{ mb: 1 }}>
-                {systemMetrics.memory_usage.toFixed(1)}%
-              </Typography>
-              <LinearProgress 
-                variant="determinate" 
-                value={systemMetrics.memory_usage} 
-                sx={{ height: 8, borderRadius: 4 }}
-                color={systemMetrics.memory_usage > 80 ? 'error' : systemMetrics.memory_usage > 60 ? 'warning' : 'primary'}
-              />
+              
+              {metricsLoading ? (
+                <CircularProgress size={24} />
+              ) : (
+                <>
+                  <Typography variant="h4" sx={{ mb: 1, color: 'primary.main' }}>
+                    {systemMetrics?.memory_usage?.toFixed(1) || 0}%
+                  </Typography>
+                  <LinearProgress
+                    variant="determinate"
+                    value={systemMetrics?.memory_usage || 0}
+                    color={getProgressColor(systemMetrics?.memory_usage || 0)}
+                    sx={{ height: 8, borderRadius: 1 }}
+                  />
+                </>
+              )}
             </CardContent>
           </Card>
+        </Grid>
 
-          <Card>
+        {/* Disk Usage */}
+        <Grid item xs={12} md={6} lg={3}>
+          <Card sx={{ height: '100%' }}>
             <CardContent>
-              <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mb: 2 }}>
-                <Typography color="textSecondary" gutterBottom>
-                  Disk Usage
-                </Typography>
-                <StorageIcon sx={{ fontSize: 40, color: 'primary.main' }} />
+              <Box sx={{ display: 'flex', alignItems: 'center', mb: 2 }}>
+                <StorageIcon color="primary" sx={{ mr: 1 }} />
+                <Typography variant="h6">Disk Usage</Typography>
+                {metricsRealTime && (
+                  <TrendingUpIcon color="success" sx={{ ml: 'auto', fontSize: 16 }} />
+                )}
               </Box>
-              <Typography variant="h4" component="div" sx={{ mb: 1 }}>
-                {systemMetrics.disk_usage.toFixed(1)}%
-              </Typography>
-              <LinearProgress 
-                variant="determinate" 
-                value={systemMetrics.disk_usage} 
-                sx={{ height: 8, borderRadius: 4 }}
-                color={systemMetrics.disk_usage > 80 ? 'error' : systemMetrics.disk_usage > 60 ? 'warning' : 'primary'}
-              />
+              
+              {metricsLoading ? (
+                <CircularProgress size={24} />
+              ) : (
+                <>
+                  <Typography variant="h4" sx={{ mb: 1, color: 'primary.main' }}>
+                    {systemMetrics?.disk_usage?.toFixed(1) || 0}%
+                  </Typography>
+                  <LinearProgress
+                    variant="determinate"
+                    value={systemMetrics?.disk_usage || 0}
+                    color={getProgressColor(systemMetrics?.disk_usage || 0)}
+                    sx={{ height: 8, borderRadius: 1 }}
+                  />
+                </>
+              )}
             </CardContent>
           </Card>
+        </Grid>
 
-          <Card>
+        {/* Network I/O */}
+        <Grid item xs={12} md={6} lg={3}>
+          <Card sx={{ height: '100%' }}>
             <CardContent>
-              <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mb: 2 }}>
-                <Typography color="textSecondary" gutterBottom>
-                  System Uptime
-                </Typography>
-                <TrendingUpIcon sx={{ fontSize: 40, color: 'primary.main' }} />
+              <Box sx={{ display: 'flex', alignItems: 'center', mb: 2 }}>
+                <NetworkIcon color="primary" sx={{ mr: 1 }} />
+                <Typography variant="h6">Network I/O</Typography>
+                {metricsRealTime && (
+                  <TrendingUpIcon color="success" sx={{ ml: 'auto', fontSize: 16 }} />
+                )}
               </Box>
-              <Typography variant="h4" component="div">
-                {formatUptime(systemMetrics.uptime)}
-              </Typography>
-              <Typography variant="body2" color="textSecondary">
-                Load: {systemMetrics.load_average.map(l => l.toFixed(2)).join(', ')}
-              </Typography>
-            </CardContent>
-          </Card>
-        </Box>
-      )}
-
-      {dockerStats && (
-        <Box sx={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(400px, 1fr))', gap: 3 }}>
-          <Card>
-            <CardContent>
-              <Typography variant="h6" gutterBottom>
-                Docker Containers
-              </Typography>
-              <Box sx={{ display: 'flex', gap: 2, mb: 3 }}>
-                <Chip 
-                  label={`Total: ${dockerStats.total_containers}`} 
-                  color="primary" 
-                  variant="outlined"
-                />
-                <Chip 
-                  label={`Running: ${dockerStats.running_containers}`} 
-                  color="success" 
-                  variant="outlined"
-                />
-                <Chip 
-                  label={`Stopped: ${dockerStats.stopped_containers}`} 
-                  color="error" 
-                  variant="outlined"
-                />
-              </Box>
-              <Box sx={{ display: 'flex', gap: 2 }}>
+              
+              {metricsLoading ? (
+                <CircularProgress size={24} />
+              ) : (
                 <Box>
-                  <Typography variant="body2" color="textSecondary">
-                    Total Memory
-                  </Typography>
-                  <Typography variant="h6">
-                    {dockerStats.total_memory_usage}
-                  </Typography>
-                </Box>
-                <Box>
-                  <Typography variant="body2" color="textSecondary">
-                    Total CPU
-                  </Typography>
-                  <Typography variant="h6">
-                    {dockerStats.total_cpu_usage}
-                  </Typography>
-                </Box>
-              </Box>
-            </CardContent>
-          </Card>
-
-          <Card>
-            <CardContent>
-              <Typography variant="h6" gutterBottom>
-                Network I/O
-              </Typography>
-              {systemMetrics && (
-                <Box sx={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
-                  <Box>
-                    <Typography variant="body2" color="textSecondary">
-                      Bytes Sent
-                    </Typography>
-                    <Typography variant="h6">
-                      {formatBytes(systemMetrics.network_io.bytes_sent)}
-                    </Typography>
-                  </Box>
-                  <Box>
-                    <Typography variant="body2" color="textSecondary">
-                      Bytes Received
-                    </Typography>
-                    <Typography variant="h6">
-                      {formatBytes(systemMetrics.network_io.bytes_recv)}
-                    </Typography>
-                  </Box>
+                                     <Typography variant="body2" color="textSecondary">
+                     In: {formatBytes(systemMetrics?.network_io?.bytes_recv || 0)}
+                   </Typography>
+                   <Typography variant="body2" color="textSecondary">
+                     Out: {formatBytes(systemMetrics?.network_io?.bytes_sent || 0)}
+                   </Typography>
+                                        <Typography variant="body2" color="textSecondary" sx={{ mt: 1 }}>
+                      Active: {systemMetrics?.active_connections || 0}
+                     </Typography>
                 </Box>
               )}
             </CardContent>
           </Card>
-        </Box>
-      )}
+        </Grid>
 
-      {dockerStats && (
-        <Card sx={{ mt: 3 }}>
-          <CardContent>
-            <Typography variant="h6" gutterBottom>
-              Container Details
-            </Typography>
-            <Box sx={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(300px, 1fr))', gap: 2 }}>
-              {dockerStats.containers.map((container) => (
-                <Box key={container.id} sx={{ p: 2, border: 1, borderColor: 'divider', borderRadius: 1 }}>
-                  <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 1 }}>
-                    <Typography variant="subtitle2" fontWeight="bold">
-                      {container.name}
-                    </Typography>
-                    <Chip 
-                      label={container.state} 
-                      size="small"
-                      color={container.state === 'running' ? 'success' : 'error'}
-                    />
-                  </Box>
-                  <Typography variant="body2" color="textSecondary" sx={{ mb: 1 }}>
-                    {container.image}
-                  </Typography>
-                  <Box sx={{ display: 'flex', gap: 2, flexWrap: 'wrap' }}>
-                    {container.memory && (
-                      <Chip label={`Memory: ${container.memory}`} size="small" variant="outlined" />
-                    )}
-                    {container.cpu && (
-                      <Chip label={`CPU: ${container.cpu}`} size="small" variant="outlined" />
-                    )}
-                    <Chip label={`Size: ${container.size}`} size="small" variant="outlined" />
-                  </Box>
-                  <Typography variant="caption" color="textSecondary" sx={{ mt: 1, display: 'block' }}>
-                    {container.status}
-                  </Typography>
-                </Box>
-              ))}
-            </Box>
-          </CardContent>
-        </Card>
-      )}
+        {/* Docker Stats (if available) */}
+        {dockerStats && (
+          <Grid item xs={12}>
+            <Card>
+              <CardContent>
+                <Typography variant="h6" sx={{ mb: 2 }}>
+                  Docker Containers
+                </Typography>
+                
+                <Grid container spacing={2}>
+                  {dockerStats.containers?.map((container, index) => (
+                    <Grid item xs={12} md={6} lg={4} key={index}>
+                      <Card variant="outlined" sx={{ p: 2 }}>
+                        <Typography variant="subtitle1" sx={{ fontWeight: 'bold', mb: 1 }}>
+                          {container.name}
+                        </Typography>
+                        
+                        <Box sx={{ mb: 1 }}>
+                          <Typography variant="body2" color="textSecondary">
+                            Status: 
+                            <Chip 
+                              label={container.status} 
+                              size="small" 
+                              color={container.status === 'running' ? 'success' : 'error'}
+                              sx={{ ml: 1 }}
+                            />
+                          </Typography>
+                        </Box>
+                        
+                        {container.cpu_percent !== undefined && (
+                          <Box sx={{ mb: 1 }}>
+                            <Typography variant="body2">
+                              CPU: {container.cpu_percent.toFixed(1)}%
+                            </Typography>
+                            <LinearProgress
+                              variant="determinate"
+                              value={container.cpu_percent}
+                              color={getProgressColor(container.cpu_percent)}
+                              size="small"
+                            />
+                          </Box>
+                        )}
+                        
+                        {container.memory_usage && (
+                          <Typography variant="body2" color="textSecondary">
+                            Memory: {formatBytes(container.memory_usage)}
+                          </Typography>
+                        )}
+                        
+                        {container.uptime && (
+                          <Typography variant="body2" color="textSecondary">
+                            Uptime: {formatUptime(container.uptime)}
+                          </Typography>
+                        )}
+                      </Card>
+                    </Grid>
+                  ))}
+                </Grid>
+              </CardContent>
+            </Card>
+          </Grid>
+        )}
+      </Grid>
+
+      {/* Status Footer */}
+      <Box sx={{ mt: 2, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+        <Typography variant="body2" color="textSecondary">
+          Last updated: {lastUpdated.toLocaleTimeString()}
+        </Typography>
+        
+        <Typography variant="body2" color="textSecondary">
+          Data source: {metricsSource === 'websocket' ? 'Real-time WebSocket' : 'HTTP Polling'}
+          {metricsRealTime && ' • Live updates every 5s'}
+        </Typography>
+      </Box>
     </Box>
   );
 };
