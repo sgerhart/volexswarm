@@ -42,6 +42,7 @@ import {
   Warning as WarningIcon,
   CheckCircle as CheckCircleIcon,
   Storage as StorageIcon,
+  Chat as ChatIcon,
 } from '@mui/icons-material';
 import AgentStatus from './AgentStatus';
 import SystemMetrics from './SystemMetrics';
@@ -51,6 +52,7 @@ import AgentManagement from './AgentManagement';
 import TradingInterface from './TradingInterface';
 import StrategyManagement from './StrategyManagement';
 import SystemMonitoring from './SystemMonitoring';
+import ChatInterface from './ChatInterface';
 
 interface FinancialMetrics {
   totalPortfolioValue: number;
@@ -116,6 +118,7 @@ const Dashboard: React.FC = () => {
 
   const menuItems = [
     { text: 'Dashboard', icon: <DashboardIcon />, component: 'dashboard' },
+    { text: 'AI Chat', icon: <ChatIcon />, component: 'chat' },
     { text: 'Trading', icon: <TradingIcon />, component: 'trading' },
     { text: 'Strategy Management', icon: <AiIcon />, component: 'strategy' },
     { text: 'Infrastructure', icon: <StorageIcon />, component: 'infrastructure' },
@@ -142,6 +145,8 @@ const Dashboard: React.FC = () => {
             </Box>
           </Box>
         );
+      case 'chat':
+        return <ChatInterface />;
       case 'trading':
         return <TradingInterface />;
       case 'strategy':

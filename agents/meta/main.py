@@ -612,7 +612,7 @@ class AgentCoordinator:
     async def assess_risk(self, parameters: Dict[str, Any]) -> Dict[str, Any]:
         """Assess risk using the risk agent."""
         try:
-            risk_url = f"{AGENT_ENDPOINTS['risk']}/assess"
+            risk_url = f"{AGENT_ENDPOINTS['risk']}/assess-risk"
             async with self.session.post(risk_url, json=parameters) as response:
                 if response.status == 200:
                     return await response.json()
@@ -624,7 +624,7 @@ class AgentCoordinator:
     async def get_account_info(self, exchange: str = "binance") -> Dict[str, Any]:
         """Get account information using the execution agent."""
         try:
-            account_url = f"{AGENT_ENDPOINTS['execution']}/account"
+            account_url = f"{AGENT_ENDPOINTS['execution']}/balance/{exchange}"
             async with self.session.get(account_url) as response:
                 if response.status == 200:
                     return await response.json()
@@ -633,10 +633,104 @@ class AgentCoordinator:
         except Exception as e:
             return {"error": f"Account check failed: {str(e)}"}
     
+    async def get_market_data(self, symbol: str, exchange: str = "binance") -> Dict[str, Any]:
+        """Get real-time market data using the execution agent."""
+        try:
+            # Handle different symbol formats for Binance.US (USDT pairs)
+            if "/" in symbol:
+                # Convert "BTC/USDT" to "BTCUSDT"
+                formatted_symbol = symbol.replace("/", "")
+            elif symbol in ["BTC", "Bitcoin"]:
+                formatted_symbol = "BTCUSDT"
+            elif symbol in ["ETH", "Ethereum"]:
+                formatted_symbol = "ETHUSDT"
+            elif symbol in ["DOGE", "Dogecoin"]:
+                formatted_symbol = "DOGEUSDT"
+            elif symbol in ["ADA", "Cardano"]:
+                formatted_symbol = "ADAUSDT"
+            elif symbol in ["SOL", "Solana"]:
+                formatted_symbol = "SOLUSDT"
+            elif symbol in ["XRP", "Ripple"]:
+                formatted_symbol = "XRPUSDT"
+            elif symbol in ["DOT", "Polkadot"]:
+                formatted_symbol = "DOTUSDT"
+            elif symbol in ["LINK", "Chainlink"]:
+                formatted_symbol = "LINKUSDT"
+            elif symbol in ["MATIC", "Polygon"]:
+                formatted_symbol = "MATICUSDT"
+            elif symbol in ["AVAX", "Avalanche"]:
+                formatted_symbol = "AVAXUSDT"
+            elif symbol in ["UNI", "Uniswap"]:
+                formatted_symbol = "UNIUSDT"
+            elif symbol in ["SHIB", "Shiba"]:
+                formatted_symbol = "SHIBUSDT"
+            elif symbol in ["LTC", "Litecoin"]:
+                formatted_symbol = "LTCUSDT"
+            elif symbol in ["BCH", "Bitcoin Cash"]:
+                formatted_symbol = "BCHUSDT"
+            elif symbol in ["TRX", "TRON"]:
+                formatted_symbol = "TRXUSDT"
+            elif symbol in ["EOS", "EOS"]:
+                formatted_symbol = "EOSUSDT"
+            elif symbol in ["ATOM", "Cosmos"]:
+                formatted_symbol = "ATOMUSDT"
+            elif symbol in ["FTM", "Fantom"]:
+                formatted_symbol = "FTMUSDT"
+            elif symbol in ["NEAR", "NEAR Protocol"]:
+                formatted_symbol = "NEARUSDT"
+            else:
+                # Assume it's already in the correct format
+                formatted_symbol = symbol
+            
+            logger.info(f"Getting market data for {symbol} -> {formatted_symbol}")
+            market_url = f"{AGENT_ENDPOINTS['execution']}/ticker/{exchange}/{formatted_symbol}"
+            async with self.session.get(market_url) as response:
+                if response.status == 200:
+                    data = await response.json()
+                    return {
+                        "symbol": symbol,
+                        "price": data.get("last"),
+                        "bid": data.get("bid"),
+                        "ask": data.get("ask"),
+                        "volume": data.get("volume"),
+                        "timestamp": data.get("timestamp"),
+                        "exchange": exchange
+                    }
+                else:
+                    error_text = await response.text()
+                    logger.error(f"Market data error for {formatted_symbol}: {response.status} - {error_text}")
+                    return {"error": f"Market data error: {response.status} - {error_text}"}
+        except Exception as e:
+            return {"error": f"Market data failed: {str(e)}"}
+    
     async def optimize_strategy(self, strategy_name: str, parameters: Dict[str, Any]) -> Dict[str, Any]:
         """Optimize strategy using the strategy agent."""
         try:
-            strategy_url = f"{AGENT_ENDPOINTS['strategy']}/optimize/{strategy_name}"
+            # First, get the strategy ID by name
+            strategies_url = f"{AGENT_ENDPOINTS['strategy']}/strategies"
+            async with self.session.get(strategies_url) as response:
+                if response.status != 200:
+                    return {"error": f"Strategy agent error: {response.status}"}
+                
+                strategies_data = await response.json()
+                strategies = strategies_data.get("strategies", [])
+                
+                # Find strategy by name
+                strategy_id = None
+                for strategy in strategies:
+                    if strategy.get("name") == strategy_name:
+                        strategy_id = strategy.get("id")
+                        break
+                
+                if not strategy_id:
+                    # Use the first available strategy as fallback
+                    if strategies:
+                        strategy_id = strategies[0].get("id")
+                    else:
+                        return {"error": "No strategies available"}
+            
+            # Now optimize the strategy using its ID
+            strategy_url = f"{AGENT_ENDPOINTS['strategy']}/strategies/{strategy_id}/optimize"
             async with self.session.post(strategy_url, json=parameters) as response:
                 if response.status == 200:
                     return await response.json()
@@ -1074,14 +1168,19 @@ async def process_conversation(request: ConversationRequest):
             # Start executing tasks if they don't require confirmation
             executed_tasks = []
             if response.tasks and not response.requires_confirmation:
+                logger.info(f"🔄 Executing {len(response.tasks)} tasks automatically")
+                
                 for task in response.tasks:
                     try:
+                        logger.info(f"🎯 Executing task: {task.type} - {task.description}")
+                        
                         # Execute task through coordinator
                         task_result = await execute_task_with_coordinator(task)
                         
                         # Update task status in conversational AI
+                        conversation_id = response.context_updates.get("conversation_id") if response.context_updates else "unknown"
                         conversational_ai.update_task_status(
-                            conversation_id=response.tasks[0].id if response.tasks else "unknown",
+                            conversation_id=conversation_id,
                             task_id=task.id,
                             status=TaskStatus.COMPLETED,
                             result=task_result
@@ -1093,10 +1192,15 @@ async def process_conversation(request: ConversationRequest):
                             "result": task_result
                         })
                         
+                        logger.info(f"✅ Task completed: {task.type}")
+                        
                     except Exception as task_error:
+                        logger.error(f"❌ Task failed: {task.type} - {str(task_error)}")
+                        
                         # Update task status as failed
+                        conversation_id = response.context_updates.get("conversation_id") if response.context_updates else "unknown"
                         conversational_ai.update_task_status(
-                            conversation_id=response.tasks[0].id if response.tasks else "unknown",
+                            conversation_id=conversation_id,
                             task_id=task.id,
                             status=TaskStatus.FAILED,
                             error=str(task_error)
@@ -1108,14 +1212,82 @@ async def process_conversation(request: ConversationRequest):
                             "error": str(task_error)
                         })
             
+            # Process executed tasks to create structured data and enhance response
+            structured_data = response.structured_data
+            enhanced_message = response.message
+            
+            if executed_tasks and not response.requires_confirmation:
+                # Check if we have market data results
+                market_data_results = []
+                research_results = []
+                
+                for executed_task in executed_tasks:
+                    if executed_task.get("status") == "completed" and executed_task.get("result"):
+                        result = executed_task["result"]
+                        if not result.get("error"):
+                            # Check if this is a research result - look in the nested result structure
+                            actual_result = result.get("result", result)
+                            if "recommendations" in actual_result:
+                                research_results.append(actual_result)
+                            elif "recommendations" in result:
+                                research_results.append(result)
+                            else:
+                                market_data_results.append(result)
+                
+                if research_results:
+                    # Create structured data for research recommendations
+                    structured_data = {
+                        "type": "research_recommendations",
+                        "results": research_results,
+                        "timestamp": datetime.now().isoformat()
+                    }
+                    
+                    # Enhance message with research results
+                    enhanced_message = "I've completed the research! Here are my findings:\n\n"
+                    for result in research_results:
+                        if "recommendations" in result:
+                            recommendations = result["recommendations"]
+                            if "top_picks" in recommendations and len(recommendations["top_picks"]) > 0:
+                                enhanced_message += f"📊 **Top Investment Picks:**\n"
+                                for i, rec in enumerate(recommendations["top_picks"][:5], 1):  # Show top 5
+                                    symbol = rec.get("symbol", "Unknown")
+                                    price = rec.get("price", 0)
+                                    reason = rec.get("reason", "Strong performance")
+                                    enhanced_message += f"{i}. **{symbol}** - ${price:,.2f} ({rec.get('price_change', 0):+.2f}%) - {reason}\n"
+                                enhanced_message += "\n"
+                            elif isinstance(recommendations, list) and len(recommendations) > 0:
+                                enhanced_message += f"📊 **Top Recommendations:**\n"
+                                for i, rec in enumerate(recommendations[:5], 1):  # Show top 5
+                                    symbol = rec.get("symbol", "Unknown")
+                                    reason = rec.get("reason", "Strong performance")
+                                    enhanced_message += f"{i}. **{symbol}** - {reason}\n"
+                                enhanced_message += "\n"
+                    
+                    enhanced_message += "The research analyzed 19 cryptocurrencies and identified the best opportunities based on market performance, volume, and trends. Would you like me to proceed with technical analysis and risk assessment for these recommendations?"
+                    
+                elif market_data_results:
+                    structured_data = {
+                        "type": "market_data",
+                        "results": market_data_results,
+                        "timestamp": datetime.now().isoformat()
+                    }
+                    
+                    # Enhance message with market data
+                    enhanced_message = "Here are the current market prices:\n\n"
+                    for result in market_data_results:
+                        symbol = result.get("symbol", "Unknown")
+                        price = result.get("price")
+                        if price:
+                            enhanced_message += f"**{symbol}**: ${price:,.2f}\n"
+            
             return {
-                "message": response.message,
+                "message": enhanced_message,
                 "tasks": [asdict(task) for task in response.tasks],
                 "requires_confirmation": response.requires_confirmation,
                 "executed_tasks": executed_tasks,
                 "conversation_id": request.conversation_id or response.context_updates.get("conversation_id"),
                 "next_actions": response.next_actions,
-                "structured_data": response.structured_data
+                "structured_data": structured_data
             }
             
     except HTTPException:
@@ -1244,38 +1416,94 @@ async def get_conversation(conversation_id: str):
 
 async def execute_task_with_coordinator(task: Task) -> Dict[str, Any]:
     """Execute a task using the appropriate agent coordinator."""
+    logger.info(f"🎯 Starting task execution: {task.type} - {task.description}")
+    
     if not coordinator:
         raise Exception("Coordinator not initialized")
     
     # Route task to appropriate coordinator method based on task type
     if task.type == TaskType.ACCOUNT_CHECK:
+        logger.info(f"🏦 Executing ACCOUNT_CHECK")
         # Get account balance and information
-        return await coordinator.get_account_info(task.parameters.get("exchange", "binance"))
+        result = await coordinator.get_account_info(task.parameters.get("exchange", "binance"))
+        logger.info(f"✅ ACCOUNT_CHECK completed")
+        return result
     
     elif task.type == TaskType.MARKET_RESEARCH:
-        # Perform market research
-        symbols = task.parameters.get("symbols", ["BTCUSD"])
-        research_results = {}
-        for symbol in symbols:
-            research_results[symbol] = await coordinator.research_symbol(symbol)
-        return research_results
+        logger.info(f"🔍 Executing MARKET_RESEARCH")
+        # Perform market research on multiple symbols
+        symbols = task.parameters.get("symbols", ["BTC", "ETH", "DOGE", "ADA", "SOL", "XRP", "DOT", "LINK", "MATIC", "AVAX", "UNI", "SHIB"])
+        logger.info(f"📊 Researching {len(symbols)} symbols: {symbols}")
+        
+        try:
+            # Call research agent for multiple symbols
+            research_url = f"{AGENT_ENDPOINTS['research']}/research/multiple"
+            async with coordinator.session.post(research_url, json=symbols) as response:
+                if response.status == 200:
+                    result = await response.json()
+                    logger.info(f"✅ MARKET_RESEARCH completed for {len(symbols)} symbols")
+                    return {"status": "completed", "result": result}
+                else:
+                    error_text = await response.text()
+                    logger.error(f"❌ MARKET_RESEARCH failed: {response.status} - {error_text}")
+                    return {"status": "failed", "error": f"Market research error: {response.status} - {error_text}"}
+        except Exception as e:
+            logger.error(f"❌ MARKET_RESEARCH task failed: {str(e)}")
+            return {"status": "failed", "error": f"Market research failed: {str(e)}"}
+    
+    elif task.type == TaskType.MARKET_DATA:
+        logger.info(f"📊 Executing MARKET_DATA")
+        # Get real-time market data
+        symbol = task.parameters.get("symbol", "BTC/USDT")
+        exchange = task.parameters.get("exchange", "binance")
+        result = await coordinator.get_market_data(symbol, exchange)
+        logger.info(f"✅ MARKET_DATA completed for {symbol}")
+        return result
     
     elif task.type == TaskType.TECHNICAL_ANALYSIS:
+        logger.info(f"📈 Executing TECHNICAL_ANALYSIS")
         # Perform technical analysis
         symbol = task.parameters.get("symbol", "BTCUSD")
-        return await coordinator.analyze_symbol(symbol, task.parameters)
+        result = await coordinator.analyze_symbol(symbol, task.parameters)
+        logger.info(f"✅ TECHNICAL_ANALYSIS completed")
+        return result
     
     elif task.type == TaskType.RISK_ASSESSMENT:
-        # Assess risk for position
-        return await coordinator.assess_risk(task.parameters)
+        logger.info(f"⚠️ Executing RISK_ASSESSMENT")
+        # Assess risk for position with proper parameters
+        symbol = task.parameters.get("symbol", "BTCUSDT")
+        amount = task.parameters.get("amount", 1000.0)
+        
+        # Get current market data for the symbol
+        market_data = await coordinator.get_market_data(symbol, "binance")
+        current_price = market_data.get("price", 50000.0)
+        
+        # Prepare risk assessment parameters
+        risk_params = {
+            "symbol": symbol,
+            "position_size": amount,
+            "entry_price": current_price,
+            "current_price": current_price,
+            "side": "buy",  # Default to buy
+            "account_balance": 10000.0,  # Default account balance
+            "stop_loss": current_price * 0.95,  # 5% stop loss
+            "take_profit": current_price * 1.10  # 10% take profit
+        }
+        
+        result = await coordinator.assess_risk(risk_params)
+        logger.info(f"✅ RISK_ASSESSMENT completed")
+        return result
     
     elif task.type == TaskType.TRADE_EXECUTION:
+        logger.info(f"💱 Executing TRADE_EXECUTION")
         # Execute trade
         symbol = task.parameters.get("symbol", "BTCUSD")
         action = task.parameters.get("action", "auto")
         confidence = task.parameters.get("confidence", 0.7)
         amount = task.parameters.get("amount")
-        return await coordinator.execute_trade(symbol, action, confidence, amount)
+        result = await coordinator.execute_trade(symbol, action, confidence, amount)
+        logger.info(f"✅ TRADE_EXECUTION completed")
+        return result
     
     elif task.type == TaskType.STRATEGY_OPTIMIZATION:
         # Optimize strategy

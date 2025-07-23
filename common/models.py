@@ -24,10 +24,10 @@ class PriceData(Base):
     time = Column(DateTime, nullable=False, primary_key=True)
     symbol = Column(String(20), nullable=False)
     exchange = Column(String(50), nullable=False)
-    open = Column(Float)
-    high = Column(Float)
-    low = Column(Float)
-    close = Column(Float)
+    open = Column(Float)  # Use standard column name
+    high = Column(Float)  # Use standard column name
+    low = Column(Float)   # Use standard column name
+    close = Column(Float) # Use standard column name
     volume = Column(Float)
     timeframe = Column(String(10), default='1h')  # 1m, 5m, 1h, 4h, 1d
     

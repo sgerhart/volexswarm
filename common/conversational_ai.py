@@ -19,6 +19,7 @@ class TaskType(Enum):
     """Types of tasks that can be decomposed from conversations."""
     ACCOUNT_CHECK = "account_check"
     MARKET_RESEARCH = "market_research"
+    MARKET_DATA = "market_data"  # Real-time price data
     TECHNICAL_ANALYSIS = "technical_analysis"
     RISK_ASSESSMENT = "risk_assessment"
     TRADE_EXECUTION = "trade_execution"
@@ -117,10 +118,12 @@ class ConversationalAI:
 You have access to these specialized agents:
 - Research Agent: Market analysis, news sentiment, trend detection
 - Signal Agent: Technical analysis, ML predictions, trading signals
-- Execution Agent: Order placement, position tracking, balance checking
+- Execution Agent: Order placement, position tracking, balance checking, real-time market data
 - Risk Agent: Position sizing, risk assessment, stop-loss management
 - Strategy Agent: Strategy development and optimization
 - Compliance Agent: Trade logging and regulatory compliance
+
+You can get real-time cryptocurrency prices and market data through the Execution Agent.
 
 When users give you complex instructions like "I have $200 in Binance, research the best tokens and trade for highest returns", you should:
 1. Break this into specific tasks
@@ -135,6 +138,7 @@ Always be helpful, clear, and focused on maximizing trading success while managi
 
 Available task types and their assigned agents:
 - account_check → "execution" agent: Verify account balance and available funds
+- market_data → "execution" agent: Get real-time price data for specific symbols
 - market_research → "research" agent: Research market conditions, trending tokens, news analysis
 - technical_analysis → "signal" agent: Perform technical analysis on specific symbols
 - risk_assessment → "risk" agent: Assess position sizing and risk parameters
@@ -261,7 +265,7 @@ Please respond naturally and break down complex requests into specific tasks if 
             messages.append({"role": "system", "content": context_prompt})
             
             # Generate response
-            response = await self.openai_client.generate_completion(
+            gpt_response = await self.openai_client.generate_completion(
                 messages=messages,
                 max_tokens=1000,
                 temperature=0.7
@@ -275,11 +279,42 @@ Please respond naturally and break down complex requests into specific tasks if 
                 tasks = await self._decompose_tasks(user_message, context)
                 requires_confirmation = self._requires_confirmation(user_message, tasks)
             
+            # Create a natural language response based on the tasks and context
+            if tasks:
+                if requires_confirmation:
+                    enhanced_message = f"I understand you want to {user_message.lower()}. I've broken this down into {len(tasks)} tasks that need your confirmation before execution:\n\n"
+                    for i, task in enumerate(tasks, 1):
+                        enhanced_message += f"{i}. {task.description}\n"
+                    enhanced_message += "\nWould you like me to proceed with these tasks?"
+                else:
+                    enhanced_message = f"I'll help you with that! I'm executing {len(tasks)} tasks to {user_message.lower()}:\n\n"
+                    for i, task in enumerate(tasks, 1):
+                        enhanced_message += f"{i}. {task.description}\n"
+                    enhanced_message += "\nLet me work on these tasks for you..."
+            else:
+                # Use the GPT response directly for simple queries
+                enhanced_message = gpt_response
+            
+            structured_data = None
+            
+            # Note: Market data enhancement will be handled after task execution in the meta agent
+            
+            # Extract context updates
+            context_updates = self._extract_context_updates(user_message)
+            
+            # Update conversation context with new information
+            if context_updates:
+                if "trading_context" in context_updates:
+                    context.trading_context.update(context_updates["trading_context"])
+                if "user_preferences" in context_updates:
+                    context.user_preferences.update(context_updates["user_preferences"])
+            
             return ConversationResponse(
-                message=response,
+                message=enhanced_message,
                 tasks=tasks,
                 requires_confirmation=requires_confirmation,
-                context_updates=self._extract_context_updates(user_message)
+                structured_data=structured_data,
+                context_updates={"conversation_id": context.conversation_id}
             )
             
         except Exception as e:
@@ -294,7 +329,9 @@ Please respond naturally and break down complex requests into specific tasks if 
         task_indicators = [
             "research", "analyze", "trade", "buy", "sell", "invest",
             "find", "best", "profitable", "strategy", "portfolio",
-            "monitor", "track", "optimize", "balance", "account"
+            "monitor", "track", "optimize", "balance", "account",
+            "price", "current", "bitcoin", "ethereum", "btc", "eth",
+            "crypto", "token", "coin", "market", "data"
         ]
         
         message_lower = message.lower()
@@ -307,8 +344,17 @@ Please respond naturally and break down complex requests into specific tasks if 
 User Request: "{user_message}"
 
 Current Trading Context: {json.dumps(context.trading_context, indent=2)}
+User Preferences: {json.dumps(context.user_preferences, indent=2)}
 
-Break this request into specific, actionable tasks. Consider the full workflow needed to complete the user's request.
+Break this request into specific, actionable tasks. Use the specialized agents effectively:
+
+- For price queries: Use MARKET_DATA task with execution agent
+- For market analysis: Use MARKET_RESEARCH task with research agent  
+- For technical analysis: Use TECHNICAL_ANALYSIS task with signal agent
+- For risk assessment: Use RISK_ASSESSMENT task with risk agent
+- For trading: Use TRADE_EXECUTION task with execution agent
+
+For research requests, analyze multiple cryptocurrencies: BTC, ETH, DOGE, ADA, SOL, XRP, DOT, LINK, MATIC, AVAX, UNI, SHIB, LTC, BCH, TRX, EOS, ATOM, FTM, NEAR
 
 {self.system_prompts["task_decomposer"]}
 
@@ -317,9 +363,9 @@ IMPORTANT: Return ONLY a valid JSON object with this exact structure:
   "tasks": [
     {{
       "type": "market_research",
-      "description": "Task description",
+      "description": "Research multiple cryptocurrencies for investment opportunities",
       "agent": "research",
-      "parameters": {{}}
+      "parameters": {{"symbols": ["BTC", "ETH", "DOGE", "ADA", "SOL", "XRP", "DOT", "LINK", "MATIC", "AVAX", "UNI", "SHIB"]}}
     }}
   ]
 }}
@@ -392,11 +438,26 @@ Do not include any other text, explanations, or formatting. Return only the JSON
     
     def _requires_confirmation(self, message: str, tasks: List[Task]) -> bool:
         """Determine if tasks require user confirmation before execution."""
+        # Only require confirmation for actual trading actions
         high_risk_tasks = [TaskType.TRADE_EXECUTION]
-        has_trading_amount = any(word in message.lower() for word in ["$", "usd", "trade", "buy", "sell"])
         has_high_risk_tasks = any(task.type in high_risk_tasks for task in tasks)
         
-        return has_trading_amount or has_high_risk_tasks or len(tasks) > 3
+        # Don't require confirmation for data gathering, research, or analysis
+        data_gathering_tasks = [
+            TaskType.MARKET_DATA, 
+            TaskType.MARKET_RESEARCH, 
+            TaskType.TECHNICAL_ANALYSIS,
+            TaskType.ACCOUNT_CHECK,
+            TaskType.PORTFOLIO_MONITORING
+        ]
+        
+        # Only require confirmation if there are high-risk tasks AND no data gathering tasks
+        if has_high_risk_tasks:
+            # If we have both high-risk and data gathering tasks, only confirm the high-risk ones
+            has_data_tasks = any(task.type in data_gathering_tasks for task in tasks)
+            return has_high_risk_tasks and not has_data_tasks
+        
+        return False
     
     def _extract_context_updates(self, message: str) -> Dict[str, Any]:
         """Extract context updates from user message."""

@@ -573,9 +573,10 @@ class ResearchAgent:
             
             # Search in multiple crypto subreddits
             for subreddit in ['cryptocurrency', 'bitcoin', 'ethereum']:
-                posts = await web_tool.execute('reddit', subreddit=subreddit, limit=10)
+                result = await web_tool.execute('reddit', subreddit=subreddit, limit=10)
+                posts = result.get('posts', []) if isinstance(result, dict) else []
                 # Filter posts mentioning the symbol
-                symbol_posts = [post for post in posts if symbol.lower() in post.get('title', '').lower() or symbol.lower() in post.get('content', '').lower()]
+                symbol_posts = [post for post in posts if isinstance(post, dict) and (symbol.lower() in post.get('title', '').lower() or symbol.lower() in post.get('content', '').lower())]
                 reddit_posts.extend(symbol_posts)
             
             results['reddit_posts'] = reddit_posts[:10]  # Top 10 relevant posts
@@ -753,6 +754,187 @@ async def research_symbol(symbol: str):
     except Exception as e:
         logger.error(f"Failed to research symbol {symbol}", exception=e)
         raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/research/multiple")
+async def research_multiple_symbols(symbols: List[str]):
+    """Research multiple cryptocurrency symbols for investment analysis."""
+    try:
+        if not research_agent:
+            raise HTTPException(status_code=500, detail="Research agent not initialized")
+        
+        logger.info(f"Researching multiple symbols: {symbols}")
+        
+        with logger.log_operation("research_multiple_symbols", {"symbols": symbols}):
+            results = {}
+            
+            # Research each symbol concurrently
+            tasks = []
+            for symbol in symbols:
+                tasks.append(research_agent.research_symbol(symbol.upper()))
+            
+            # Execute all research tasks concurrently
+            symbol_results = await asyncio.gather(*tasks, return_exceptions=True)
+            
+            # Process results
+            for i, symbol in enumerate(symbols):
+                if isinstance(symbol_results[i], Exception):
+                    logger.error(f"Failed to research {symbol}: {symbol_results[i]}")
+                    results[symbol] = {"error": str(symbol_results[i])}
+                else:
+                    results[symbol] = symbol_results[i]
+            
+            # Add market trends and sentiment analysis
+            try:
+                trends = await research_agent.research_crypto_trends()
+                results["market_trends"] = trends
+            except Exception as e:
+                logger.error(f"Failed to get market trends: {e}")
+                results["market_trends"] = {"error": str(e)}
+            
+            # Generate recommendations
+            try:
+                logger.info("About to generate investment recommendations")
+                recommendations = await generate_investment_recommendations(results, symbols)
+                logger.info("Successfully generated investment recommendations")
+            except Exception as e:
+                logger.error(f"Failed to generate investment recommendations: {e}")
+                recommendations = {
+                    "top_picks": [],
+                    "high_potential": [],
+                    "stable_options": [],
+                    "risk_assessment": {},
+                    "summary": "Failed to generate recommendations due to an error."
+                }
+            
+            return {
+                "agent": "enhanced_research",
+                "symbols_researched": symbols,
+                "results": results,
+                "timestamp": datetime.now().isoformat(),
+                "recommendations": recommendations
+            }
+        
+    except Exception as e:
+        logger.error(f"Failed to research multiple symbols: {str(e)}", exception=e)
+        raise HTTPException(status_code=500, detail=str(e))
+
+async def generate_investment_recommendations(research_data: Dict[str, Any], symbols: List[str]) -> Dict[str, Any]:
+    """Generate investment recommendations based on research data."""
+    logger.info(f"Generating investment recommendations for {len(symbols)} symbols: {symbols}")
+    try:
+        recommendations = {
+            "top_picks": [],
+            "high_potential": [],
+            "stable_options": [],
+            "risk_assessment": {},
+            "summary": ""
+        }
+        
+        # Get real-time market data for recommendations
+        try:
+            import ccxt
+            logger.info("Starting real-time market data fetching for recommendations")
+            exchange = ccxt.binanceus({
+                'enableRateLimit': True
+            })
+            
+            # Get current prices for all symbols
+            for symbol in symbols:
+                try:
+                    # Convert symbol to USDT pair
+                    if symbol in ["BTC", "Bitcoin"]:
+                        trading_pair = "BTC/USDT"
+                    elif symbol in ["ETH", "Ethereum"]:
+                        trading_pair = "ETH/USDT"
+                    elif symbol in ["DOGE", "Dogecoin"]:
+                        trading_pair = "DOGE/USDT"
+                    elif symbol in ["ADA", "Cardano"]:
+                        trading_pair = "ADA/USDT"
+                    elif symbol in ["SOL", "Solana"]:
+                        trading_pair = "SOL/USDT"
+                    elif symbol in ["XRP", "Ripple"]:
+                        trading_pair = "XRP/USDT"
+                    elif symbol in ["DOT", "Polkadot"]:
+                        trading_pair = "DOT/USDT"
+                    elif symbol in ["LINK", "Chainlink"]:
+                        trading_pair = "LINK/USDT"
+                    elif symbol in ["MATIC", "Polygon"]:
+                        trading_pair = "MATIC/USDT"
+                    elif symbol in ["AVAX", "Avalanche"]:
+                        trading_pair = "AVAX/USDT"
+                    elif symbol in ["UNI", "Uniswap"]:
+                        trading_pair = "UNI/USDT"
+                    elif symbol in ["SHIB", "Shiba"]:
+                        trading_pair = "SHIB/USDT"
+                    else:
+                        trading_pair = f"{symbol}/USDT"
+                    
+                    ticker = exchange.fetch_ticker(trading_pair)
+                    logger.info(f"Got ticker data for {trading_pair}: {ticker.get('last', 0)}")
+                    
+                    # Calculate 24h change
+                    price_change = ticker.get('percentage', 0)
+                    volume = ticker.get('quoteVolume', 0)
+                    current_price = ticker.get('last', 0)
+                    
+                    # Categorize based on performance
+                    if price_change > 5:  # High growth
+                        recommendations["high_potential"].append({
+                            "symbol": symbol,
+                            "price": current_price,
+                            "price_change": price_change,
+                            "volume": volume,
+                            "reason": "Strong 24h performance"
+                        })
+                    elif price_change > 0:  # Stable growth
+                        recommendations["stable_options"].append({
+                            "symbol": symbol,
+                            "price": current_price,
+                            "price_change": price_change,
+                            "volume": volume,
+                            "reason": "Consistent positive performance"
+                        })
+                    else:
+                        # Even negative performers can be opportunities
+                        recommendations["stable_options"].append({
+                            "symbol": symbol,
+                            "price": current_price,
+                            "price_change": price_change,
+                            "volume": volume,
+                            "reason": "Potential buying opportunity"
+                        })
+                        
+                except Exception as e:
+                    logger.error(f"Failed to get data for {symbol}: {e}")
+                    continue
+                    
+        except Exception as e:
+            logger.error(f"Failed to get real-time market data: {e}")
+            logger.error(f"Exception details: {type(e).__name__}: {str(e)}")
+        
+        # Sort by performance
+        recommendations["high_potential"].sort(key=lambda x: x["price_change"], reverse=True)
+        recommendations["stable_options"].sort(key=lambda x: x["price_change"], reverse=True)
+        
+        # Top picks (top 3 from high potential, or top 3 from stable if no high potential)
+        if recommendations["high_potential"]:
+            recommendations["top_picks"] = recommendations["high_potential"][:3]
+        else:
+            recommendations["top_picks"] = recommendations["stable_options"][:3]
+        
+        # Generate summary
+        if recommendations["top_picks"]:
+            top_symbols = [pick["symbol"] for pick in recommendations["top_picks"]]
+            top_prices = [f"${pick['price']:,.2f}" for pick in recommendations["top_picks"]]
+            recommendations["summary"] = f"Top recommendations: {', '.join(top_symbols)} at {', '.join(top_prices)} based on market performance."
+        else:
+            recommendations["summary"] = "Consider stable options for conservative investment approach."
+        
+        return recommendations
+        
+    except Exception as e:
+        logger.error(f"Failed to generate recommendations: {e}")
+        return {"error": str(e)}
 
 
 @app.get("/research/hot")

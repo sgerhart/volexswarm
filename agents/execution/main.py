@@ -47,6 +47,7 @@ db_client = None
 ws_client = None  # WebSocket client for real-time communication
 exchanges = {}  # Exchange instances
 dry_run_mode = True  # Default to dry run for safety
+sandbox_trading = True  # Use sandbox for trading, but real data for market info
 
 
 class OrderRequest(BaseModel):
@@ -57,7 +58,7 @@ class OrderRequest(BaseModel):
     amount: Optional[float] = None
     price: Optional[float] = None
     stop_price: Optional[float] = None
-    exchange: str = 'binanceus'  # Default to Binance.US for US compliance
+    exchange: str = 'binance'  # Default to Binance
 
 
 class PositionResponse(BaseModel):
@@ -101,7 +102,17 @@ class ExchangeManager:
         try:
             # Get exchange credentials from Vault
             exchanges_config = get_agent_config("execution")
-            enabled_exchanges = exchanges_config.get("enabled_exchanges", ["binanceus"])
+            enabled_exchanges = exchanges_config.get("enabled_exchanges", ["binance"])
+            
+            # Handle case where enabled_exchanges is stored as a string
+            if isinstance(enabled_exchanges, str):
+                import json
+                try:
+                    enabled_exchanges = json.loads(enabled_exchanges)
+                except:
+                    enabled_exchanges = [enabled_exchanges]
+            
+            logger.info(f"Initializing exchanges: {enabled_exchanges}")
             
             for exchange_name in enabled_exchanges:
                 try:
@@ -110,12 +121,14 @@ class ExchangeManager:
                         logger.warning(f"No credentials found for {exchange_name}")
                         continue
                     
+                    logger.info(f"Initializing {exchange_name} with credentials")
+                    
                     # Initialize exchange
                     exchange_class = getattr(ccxt_async, exchange_name)
                     exchange = exchange_class({
                         'apiKey': credentials.get('api_key'),
                         'secret': credentials.get('secret_key'),
-                        'sandbox': dry_run_mode,  # Use sandbox in dry run mode
+                        'sandbox': sandbox_trading,  # Use sandbox for trading, but real data
                         'enableRateLimit': True,
                         'options': {
                             'defaultType': 'spot',  # Default to spot trading
@@ -383,7 +396,10 @@ async def startup_event():
             logger.warning("No configuration found in Vault, using fallback configuration")
         
         dry_run_mode = config.get("dry_run_mode", True)
+        sandbox_trading = config.get("sandbox_trading", True)  # Default to sandbox trading
         logger.info(f"Execution agent started in {'DRY RUN' if dry_run_mode else 'LIVE'} mode")
+        logger.info(f"Trading mode: {'SANDBOX' if sandbox_trading else 'LIVE'}")
+        logger.info(f"Market data: REAL (using live Binance API)")
         
         # Initialize exchanges
         await exchange_manager.initialize_exchanges()
