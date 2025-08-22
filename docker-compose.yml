@@ -1,4 +1,4 @@
-version: "3.8"
+# Docker Compose version is now inferred from the file format
 
 services:
   vault:
@@ -8,13 +8,23 @@ services:
       - "8200:8200"
     environment:
       VAULT_ADDR: http://0.0.0.0:8200
+      # Enhanced security configuration
+      VAULT_SECURITY_ENABLED: "true"
     cap_add:
       - IPC_LOCK
     volumes:
       - vault_data:/vault/data
       - ./vault.hcl:/vault/config/vault.hcl:ro
+      # Security audit logs
+      - ./logs/security:/vault/logs
     command: ["vault", "server", "-config=/vault/config/vault.hcl"]
     restart: unless-stopped
+    # Health check
+    healthcheck:
+      test: ["CMD", "vault", "status"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
 
   db:
     image: timescale/timescaledb:latest-pg14
@@ -23,272 +33,486 @@ services:
       POSTGRES_USER: volex
       POSTGRES_PASSWORD: volex_pass
       POSTGRES_DB: volextrades
+      # Database security
+      POSTGRES_INITDB_ARGS: "--auth-host=scram-sha-256"
     ports:
       - "5432:5432"
     volumes:
       - db_data:/var/lib/postgresql/data
+      # Database audit logs
+      - ./logs/db:/var/log/postgresql
     restart: unless-stopped
-
-  redis:
-    image: redis:7-alpine
-    container_name: volexswarm-redis
-    ports:
-      - "6379:6379"
-    restart: unless-stopped
+    # Health check
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U volex -d volextrades"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
 
   research:
     build:
       context: .
-      dockerfile: docker/research.Dockerfile
+      dockerfile: docker/research-optimized.Dockerfile
     ports:
       - "8001:8000"
     environment:
-      - VAULT_ADDR=http://vault:8200
-      - VAULT_TOKEN=${VAULT_ROOT_TOKEN}
-      - DB_HOST=db
-      - DB_PORT=5432
-      - DB_NAME=volextrades
-      - DB_USER=volex
-      - DB_PASSWORD=volex_pass
+      # Security environment variables
+      SECURITY_ENABLED: "true"
+      JWT_SECRET: ${JWT_SECRET:-volexswarm-jwt-secret-2024}
+      SECURITY_LOG_LEVEL: INFO
+      # Infrastructure connections
+      VAULT_ADDR: http://vault:8200
+      VAULT_TOKEN: ${VAULT_ROOT_TOKEN}
+      DB_HOST: db
+      DB_PORT: 5432
+      DB_NAME: volextrades
+      DB_USER: volex
+      DB_PASSWORD: volex_pass
     depends_on:
-      - vault
-      - db
+      vault:
+        condition: service_healthy
+      db:
+        condition: service_healthy
     volumes:
       - ./logs/agents:/app/logs
+      # Security audit logs
+      - ./logs/security:/app/security/audit
     restart: unless-stopped
+    # Health check
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
 
   execution:
     build:
       context: .
-      dockerfile: docker/execute.Dockerfile
+      dockerfile: docker/execution-optimized.Dockerfile
     ports:
       - "8002:8002"
     environment:
-      - VAULT_ADDR=http://vault:8200
-      - VAULT_TOKEN=${VAULT_ROOT_TOKEN}
-      - DB_HOST=db
-      - DB_PORT=5432
-      - DB_NAME=volextrades
-      - DB_USER=volex
-      - DB_PASSWORD=volex_pass
+      # Security environment variables
+      SECURITY_ENABLED: "true"
+      JWT_SECRET: ${JWT_SECRET:-volexswarm-jwt-secret-2024}
+      SECURITY_LOG_LEVEL: INFO
+      # Infrastructure connections
+      VAULT_ADDR: http://vault:8200
+      VAULT_TOKEN: ${VAULT_ROOT_TOKEN}
+      DB_HOST: db
+      DB_PORT: 5432
+      DB_NAME: volextrades
+      DB_USER: volex
+      DB_PASSWORD: volex_pass
     depends_on:
-      - vault
-      - db
+      vault:
+        condition: service_healthy
+      db:
+        condition: service_healthy
     volumes:
       - ./logs/agents:/app/logs
+      - ./logs/security:/app/security/audit
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8002/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
 
   signal:
     build:
       context: .
-      dockerfile: docker/signal.Dockerfile
+      dockerfile: docker/signal-enhanced.Dockerfile
     ports:
       - "8003:8003"
     environment:
-      - VAULT_ADDR=http://vault:8200
-      - VAULT_TOKEN=${VAULT_ROOT_TOKEN}
-      - DB_HOST=db
-      - DB_PORT=5432
-      - DB_NAME=volextrades
-      - DB_USER=volex
-      - DB_PASSWORD=volex_pass
+      # Security environment variables
+      SECURITY_ENABLED: "true"
+      JWT_SECRET: ${JWT_SECRET:-volexswarm-jwt-secret-2024}
+      SECURITY_LOG_LEVEL: INFO
+      # Infrastructure connections
+      VAULT_ADDR: http://vault:8200
+      VAULT_TOKEN: ${VAULT_ROOT_TOKEN}
+      DB_HOST: db
+      DB_PORT: 5432
+      DB_NAME: volextrades
+      DB_USER: volex
+      DB_PASSWORD: volex_pass
+      # Real-time signal processing
+      REAL_TIME_ENABLED: "true"
+      SIGNAL_VALIDATION_ENABLED: "true"
+      SIGNAL_ACKNOWLEDGMENT_ENABLED: "true"
     depends_on:
-      - vault
-      - db
+      vault:
+        condition: service_healthy
+      db:
+        condition: service_healthy
     volumes:
       - ./logs/agents:/app/logs
+      - ./logs/security:/app/security/audit
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8003/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
 
   meta:
     build:
       context: .
-      dockerfile: docker/meta.Dockerfile
+      dockerfile: docker/meta-optimized.Dockerfile
     ports:
-      - "8004:8004"
+      - "8004:8004"  # FastAPI + WebSocket
     environment:
-      - VAULT_ADDR=http://vault:8200
-      - VAULT_TOKEN=${VAULT_ROOT_TOKEN}
-      - DB_HOST=db
-      - DB_PORT=5432
-      - DB_NAME=volextrades
-      - DB_USER=volex
-      - DB_PASSWORD=volex_pass
+      # Enhanced security environment variables
+      SECURITY_ENABLED: "true"
+      JWT_SECRET: ${JWT_SECRET:-volexswarm-jwt-secret-2024}
+      SECURITY_LOG_LEVEL: INFO
+      # Infrastructure connections
+      VAULT_ADDR: http://vault:8200
+      VAULT_TOKEN: ${VAULT_ROOT_TOKEN}
+      DB_HOST: db
+      DB_PORT: 5432
+      DB_NAME: volextrades
+      DB_USER: volex
+      DB_PASSWORD: volex_pass
+      MPLCONFIGDIR: /tmp/matplotlib
     depends_on:
-      - vault
-      - db
-      - research
-      - execution
-      - signal
-      - strategy
+      vault:
+        condition: service_healthy
+      db:
+        condition: service_healthy
     volumes:
       - ./logs/agents:/app/logs
+      - ./logs/security:/app/security/audit
+      - ./scripts/security:/app/scripts/security:ro
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8004/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
 
   strategy:
     build:
       context: .
-      dockerfile: docker/strategy.Dockerfile
+      dockerfile: docker/strategy-optimized.Dockerfile
     ports:
       - "8011:8011"
     environment:
-      - VAULT_ADDR=http://vault:8200
-      - VAULT_TOKEN=${VAULT_ROOT_TOKEN}
-      - DB_HOST=db
-      - DB_PORT=5432
-      - DB_NAME=volextrades
-      - DB_USER=volex
-      - DB_PASSWORD=volex_pass
+      # Security environment variables
+      SECURITY_ENABLED: "true"
+      JWT_SECRET: ${JWT_SECRET:-volexswarm-jwt-secret-2024}
+      SECURITY_LOG_LEVEL: INFO
+      # Infrastructure connections
+      VAULT_ADDR: http://vault:8200
+      VAULT_TOKEN: ${VAULT_ROOT_TOKEN}
+      DB_HOST: db
+      DB_PORT: 5432
+      DB_NAME: volextrades
+      DB_USER: volex
+      DB_PASSWORD: volex_pass
     depends_on:
-      - vault
-      - db
+      vault:
+        condition: service_healthy
+      db:
+        condition: service_healthy
     volumes:
       - ./logs/agents:/app/logs
+      - ./logs/security:/app/security/audit
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8011/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
 
   risk:
     build:
       context: .
-      dockerfile: docker/risk.Dockerfile
+      dockerfile: docker/risk-optimized.Dockerfile
     ports:
       - "8009:8009"
     environment:
-      - VAULT_ADDR=http://vault:8200
-      - VAULT_TOKEN=${VAULT_ROOT_TOKEN}
-      - DB_HOST=db
-      - DB_PORT=5432
-      - DB_NAME=volextrades
-      - DB_USER=volex
-      - DB_PASSWORD=volex_pass
+      # Security environment variables
+      SECURITY_ENABLED: "true"
+      JWT_SECRET: ${JWT_SECRET:-volexswarm-jwt-secret-2024}
+      SECURITY_LOG_LEVEL: INFO
+      # Infrastructure connections
+      VAULT_ADDR: http://vault:8200
+      VAULT_TOKEN: ${VAULT_ROOT_TOKEN}
+      DB_HOST: db
+      DB_PORT: 5432
+      DB_NAME: volextrades
+      DB_USER: volex
+      DB_PASSWORD: volex_pass
     depends_on:
-      - vault
-      - db
+      vault:
+        condition: service_healthy
+      db:
+        condition: service_healthy
     volumes:
       - ./logs/agents:/app/logs
+      - ./logs/security:/app/security/audit
     restart: unless-stopped
-
-  monitor:
-    build:
-      context: .
-      dockerfile: docker/monitor.Dockerfile
-    ports:
-      - "8008:8008"
-    environment:
-      - VAULT_ADDR=http://vault:8200
-      - VAULT_TOKEN=${VAULT_ROOT_TOKEN}
-      - DB_HOST=db
-      - DB_PORT=5432
-      - DB_NAME=volextrades
-      - DB_USER=volex
-      - DB_PASSWORD=volex_pass
-    depends_on:
-      - vault
-      - db
-    volumes:
-      - ./logs/agents:/app/logs
-    restart: unless-stopped
-
-  backtest:
-    build:
-      context: .
-      dockerfile: docker/backtest.Dockerfile
-    ports:
-      - "8006:8006"
-    environment:
-      - VAULT_ADDR=http://vault:8200
-      - VAULT_TOKEN=${VAULT_ROOT_TOKEN}
-      - DB_HOST=db
-      - DB_PORT=5432
-      - DB_NAME=volextrades
-      - DB_USER=volex
-      - DB_PASSWORD=volex_pass
-    depends_on:
-      - vault
-      - db
-    volumes:
-      - ./logs/agents:/app/logs
-    restart: unless-stopped
-
-  optimize:
-    build:
-      context: .
-      dockerfile: docker/optimize.Dockerfile
-    ports:
-      - "8007:8007"
-    environment:
-      - VAULT_ADDR=http://vault:8200
-      - VAULT_TOKEN=${VAULT_ROOT_TOKEN}
-      - DB_HOST=db
-      - DB_PORT=5432
-      - DB_NAME=volextrades
-      - DB_USER=volex
-      - DB_PASSWORD=volex_pass
-    depends_on:
-      - vault
-      - db
-    volumes:
-      - ./logs/agents:/app/logs
-    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8009/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
 
   compliance:
     build:
       context: .
-      dockerfile: docker/compliance.Dockerfile
+      dockerfile: docker/compliance-optimized.Dockerfile
     ports:
       - "8010:8010"
     environment:
-      - VAULT_ADDR=http://vault:8200
-      - VAULT_TOKEN=${VAULT_ROOT_TOKEN}
-      - DB_HOST=db
-      - DB_PORT=5432
-      - DB_NAME=volextrades
-      - DB_USER=volex
-      - DB_PASSWORD=volex_pass
+      # Security environment variables
+      SECURITY_ENABLED: "true"
+      JWT_SECRET: ${JWT_SECRET:-volexswarm-jwt-secret-2024}
+      SECURITY_LOG_LEVEL: INFO
+      # Infrastructure connections
+      VAULT_ADDR: http://vault:8200
+      VAULT_TOKEN: ${VAULT_ROOT_TOKEN}
+      DB_HOST: db
+      DB_PORT: 5432
+      DB_NAME: volextrades
+      DB_USER: volex
+      DB_PASSWORD: volex_pass
     depends_on:
-      - vault
-      - db
+      vault:
+        condition: service_healthy
+      db:
+        condition: service_healthy
     volumes:
       - ./logs/agents:/app/logs
+      - ./logs/security:/app/security/audit
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8010/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
 
-  config:
+  backtest:
     build:
       context: .
-      dockerfile: docker/config.Dockerfile
+      dockerfile: docker/backtest-optimized.Dockerfile
     ports:
-      - "8012:8012"
+      - "8006:8006"
     environment:
-      - VAULT_ADDR=http://vault:8200
-      - VAULT_TOKEN=${VAULT_ROOT_TOKEN}
-      - DB_HOST=db
-      - DB_PORT=5432
-      - DB_NAME=volextrades
-      - DB_USER=volex
-      - DB_PASSWORD=volex_pass
+      # Security environment variables
+      SECURITY_ENABLED: "true"
+      JWT_SECRET: ${JWT_SECRET:-volexswarm-jwt-secret-2024}
+      SECURITY_LOG_LEVEL: INFO
+      # Infrastructure connections
+      VAULT_ADDR: http://vault:8200
+      VAULT_TOKEN: ${VAULT_ROOT_TOKEN}
+      DB_HOST: db
+      DB_PORT: 5432
+      DB_NAME: volextrades
+      DB_USER: volex
+      DB_PASSWORD: volex_pass
     depends_on:
-      - vault
-      - db
+      vault:
+        condition: service_healthy
+      db:
+        condition: service_healthy
     volumes:
       - ./logs/agents:/app/logs
+      - ./logs/security:/app/security/audit
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8006/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
 
-  webui:
+  optimize:
     build:
-      context: ./webui/react-ui
-      dockerfile: Dockerfile
+      context: .
+      dockerfile: docker/optimize-optimized.Dockerfile
     ports:
-      - "8005:80"
+      - "8007:8007"
+    environment:
+      # Security environment variables
+      SECURITY_ENABLED: "true"
+      JWT_SECRET: ${JWT_SECRET:-volexswarm-jwt-secret-2024}
+      SECURITY_LOG_LEVEL: INFO
+      # Infrastructure connections
+      VAULT_ADDR: http://vault:8200
+      VAULT_TOKEN: ${VAULT_ROOT_TOKEN}
+      DB_HOST: db
+      DB_PORT: 5432
+      DB_NAME: volextrades
+      DB_USER: volex
+      DB_PASSWORD: volex_pass
     depends_on:
-      - vault
-      - db
-      - redis
-      - research
-      - execution
-      - signal
-      - meta
-      - strategy
-      - risk
-      - compliance
+      vault:
+        condition: service_healthy
+      db:
+        condition: service_healthy
+    volumes:
+      - ./logs/agents:/app/logs
+      - ./logs/security:/app/security/audit
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8007/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+  monitor:
+    build:
+      context: .
+      dockerfile: docker/monitor-optimized.Dockerfile
+    ports:
+      - "8008:8008"
+    environment:
+      # Security environment variables
+      SECURITY_ENABLED: "true"
+      JWT_SECRET: ${JWT_SECRET:-volexswarm-jwt-secret-2024}
+      SECURITY_LOG_LEVEL: INFO
+      # Infrastructure connections
+      VAULT_ADDR: http://vault:8200
+      VAULT_TOKEN: ${VAULT_ROOT_TOKEN}
+      DB_HOST: db
+      DB_PORT: 5432
+      DB_NAME: volextrades
+      DB_USER: volex
+      DB_PASSWORD: volex_pass
+    depends_on:
+      vault:
+        condition: service_healthy
+      db:
+        condition: service_healthy
+    volumes:
+      - ./logs/agents:/app/logs
+      - ./logs/security:/app/security/audit
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8008/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+  news_sentiment:
+    build:
+      context: .
+      dockerfile: docker/news_sentiment.Dockerfile
+    ports:
+      - "8024:8024"
+    environment:
+      # Security environment variables
+      SECURITY_ENABLED: "true"
+      JWT_SECRET: ${JWT_SECRET:-volexswarm-jwt-secret-2024}
+      SECURITY_LOG_LEVEL: INFO
+      # Infrastructure connections
+      VAULT_ADDR: http://vault:8200
+      VAULT_TOKEN: ${VAULT_ROOT_TOKEN}
+      DB_HOST: db
+      DB_PORT: 5432
+      DB_NAME: volextrades
+      DB_USER: volex
+      DB_PASSWORD: volex_pass
+    depends_on:
+      vault:
+        condition: service_healthy
+      db:
+        condition: service_healthy
+    volumes:
+      - ./logs/agents:/app/logs
+      - ./logs/security:/app/security/audit
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8024/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+  strategy_discovery:
+    build:
+      context: .
+      dockerfile: docker/strategy_discovery.Dockerfile
+    ports:
+      - "8025:8025"
+    environment:
+      # Security environment variables
+      SECURITY_ENABLED: "true"
+      JWT_SECRET: ${JWT_SECRET:-volexswarm-jwt-secret-2024}
+      SECURITY_LOG_LEVEL: INFO
+      # Infrastructure connections
+      VAULT_ADDR: http://vault:8200
+      VAULT_TOKEN: ${VAULT_ROOT_TOKEN}
+      DB_HOST: db
+      DB_PORT: 5432
+      DB_NAME: volextrades
+      DB_USER: volex
+      DB_PASSWORD: volex_pass
+    depends_on:
+      vault:
+        condition: service_healthy
+      db:
+        condition: service_healthy
+    volumes:
+      - ./logs/agents:/app/logs
+      - ./logs/security:/app/security/audit
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8025/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+  realtime_data:
+    build:
+      context: .
+      dockerfile: docker/realtime_data.Dockerfile
+    ports:
+      - "8026:8026"
+    environment:
+      # Security environment variables
+      SECURITY_ENABLED: "true"
+      JWT_SECRET: ${JWT_SECRET:-volexswarm-jwt-secret-2024}
+      SECURITY_LOG_LEVEL: INFO
+      # Infrastructure connections
+      VAULT_ADDR: http://vault:8200
+      VAULT_TOKEN: ${VAULT_ROOT_TOKEN}
+      DB_HOST: db
+      DB_PORT: 5432
+      DB_NAME: volextrades
+      DB_USER: volex
+      DB_PASSWORD: volex_pass
+    depends_on:
+      vault:
+        condition: service_healthy
+      db:
+        condition: service_healthy
+    volumes:
+      - ./logs/agents:/app/logs
+      - ./logs/security:/app/security/audit
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8026/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+
 
 volumes:
   vault_data:

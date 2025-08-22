@@ -6,6 +6,7 @@ Provides real-time communication capabilities for all VolexSwarm agents.
 import asyncio
 import json
 import logging
+import time
 import uuid
 from datetime import datetime
 from enum import Enum
@@ -18,12 +19,14 @@ logger = logging.getLogger(__name__)
 
 class MessageType(Enum):
     """WebSocket message types - matches Meta Agent definitions."""
+    WELCOME = "welcome"  # Added for Meta Agent welcome messages
     AGENT_STATUS = "agent_status"
     HEALTH_UPDATE = "health_update"
     TRADE_UPDATE = "trade_update"
     SIGNAL_UPDATE = "signal_update"
     TASK_PROGRESS = "task_progress"
     NOTIFICATION = "notification"
+    INITIAL_STATUS = "initial_status"
     PING = "ping"
     PONG = "pong"
     SUBSCRIBE = "subscribe"
@@ -97,11 +100,14 @@ class AgentWebSocketClient:
             self._start_background_tasks()
             
             # Send initial agent registration
-            await self.send_agent_status({
-                "agent": self.agent_name,
-                "status": "connected",
-                "capabilities": self._get_agent_capabilities()
-            })
+            try:
+                await self.send_agent_status({
+                    "agent": self.agent_name,
+                    "status": "connected",
+                    "capabilities": self._get_agent_capabilities()
+                })
+            except Exception as e:
+                logger.warning(f"[{self.agent_name}] Failed to send initial status: {e}")
             
             # Notify connection handlers
             for handler in self.connection_handlers:
@@ -112,14 +118,26 @@ class AgentWebSocketClient:
             
             return True
             
+        except websockets.exceptions.InvalidStatusCode as e:
+            if e.status_code == 403:
+                # Connection limit reached - don't retry immediately
+                logger.warning(f"[{self.agent_name}] Meta Agent connection limit reached (HTTP 403). Will retry with longer delay.")
+                # Set a longer reconnect interval for connection limit errors
+                self.reconnect_interval = 60  # 1 minute instead of 5 seconds
+                return False
+            else:
+                logger.error(f"[{self.agent_name}] WebSocket connection failed with status {e.status_code}: {e}")
+                return False
         except Exception as e:
-            logger.error(f"[{self.agent_name}] Failed to connect to Meta Agent: {e}")
-            self.connected = False
-            
-            if self.auto_reconnect:
-                self._schedule_reconnect()
-            
-            return False
+            # Check if this is a connection limit error from the error message
+            error_str = str(e).lower()
+            if "403" in error_str or "connection limit" in error_str or "forbidden" in error_str:
+                logger.warning(f"[{self.agent_name}] Meta Agent connection limit detected: {e}. Will retry with longer delay.")
+                self.reconnect_interval = 60  # 1 minute instead of 5 seconds
+                return False
+            else:
+                logger.error(f"[{self.agent_name}] WebSocket connection error: {e}")
+                return False
     
     async def disconnect(self):
         """Disconnect from Meta Agent."""
@@ -157,12 +175,52 @@ class AgentWebSocketClient:
             return False
         
         try:
+            start_time = time.time()
             await self.websocket.send(message.to_json())
+            response_time_ms = int((time.time() - start_time) * 1000)
+            
+            # Log the communication
+            try:
+                from .communication_logger import communication_logger
+                await communication_logger.log_websocket_message(
+                    from_agent=self.agent_name,
+                    to_agent="meta",
+                    message_type=message.type.value,
+                    direction="outbound",
+                    message_data=message.data,
+                    response_time_ms=response_time_ms,
+                    status="sent",
+                    metadata={"message_id": str(uuid.uuid4())}
+                )
+            except Exception as log_error:
+                logger.warning(f"[{self.agent_name}] Failed to log communication: {log_error}")
+            
             logger.debug(f"[{self.agent_name}] Sent {message.type.value} message")
             return True
             
         except Exception as e:
             logger.error(f"[{self.agent_name}] Failed to send message: {e}")
+            
+            # Log the failed communication
+            try:
+                from .communication_logger import communication_logger
+                # Check if communication logger is initialized before using it
+                if hasattr(communication_logger, 'db_client') and communication_logger.db_client is not None:
+                    await communication_logger.log_websocket_message(
+                        from_agent=self.agent_name,
+                        to_agent="meta",
+                        message_type=message.type.value,
+                        direction="outbound",
+                        message_data=message.data,
+                        status="failed",
+                        error_message=str(e),
+                        metadata={"message_id": str(uuid.uuid4())}
+                    )
+                else:
+                    logger.warning(f"[{self.agent_name}] Communication logger not initialized, skipping failed message logging")
+            except Exception as log_error:
+                logger.warning(f"[{self.agent_name}] Failed to log failed communication: {log_error}")
+            
             self.connected = False
             
             if self.auto_reconnect:
@@ -282,7 +340,31 @@ class AgentWebSocketClient:
                 message_str = await self.websocket.recv()
                 message_data = json.loads(message_str)
                 
-                message_type = MessageType(message_data.get("type", "notification"))
+                message_type_str = message_data.get("type", "notification")
+                
+                # Try to parse the message type, but handle unknown types gracefully
+                try:
+                    message_type = MessageType(message_type_str)
+                except ValueError:
+                    # Unknown message type - log it but don't fail the connection
+                    logger.info(f"[{self.agent_name}] Received unknown message type: {message_type_str}")
+                    # Handle as notification type for now
+                    message_type = MessageType.NOTIFICATION
+                
+                # Log the incoming message
+                try:
+                    from .communication_logger import communication_logger
+                    await communication_logger.log_websocket_message(
+                        from_agent="meta",
+                        to_agent=self.agent_name,
+                        message_type=message_type.value,
+                        direction="inbound",
+                        message_data=message_data,
+                        status="received",
+                        metadata={"message_id": str(uuid.uuid4())}
+                    )
+                except Exception as log_error:
+                    logger.warning(f"[{self.agent_name}] Failed to log incoming communication: {log_error}")
                 
                 # Handle message with registered handlers
                 for handler in self.message_handlers[message_type]:
@@ -323,18 +405,42 @@ class AgentWebSocketClient:
     
     async def _reconnect_loop(self):
         """Automatic reconnection loop."""
+        consecutive_403_errors = 0  # Track consecutive connection limit errors
+        
         while not self.connected and self.auto_reconnect:
             try:
                 logger.info(f"[{self.agent_name}] Attempting to reconnect in {self.reconnect_interval} seconds")
                 await asyncio.sleep(self.reconnect_interval)
                 
                 if await self.connect():
+                    # Reset reconnect interval and error count on successful connection
+                    self.reconnect_interval = 5  # Back to normal 5-second interval
+                    consecutive_403_errors = 0
                     break
+                else:
+                    # Connection failed - check if it was due to connection limit
+                    if self.reconnect_interval > 5:  # If interval was modified by connect method
+                        consecutive_403_errors += 1
+                        # Keep the modified interval for now
+                        logger.warning(f"[{self.agent_name}] Connection limit error #{consecutive_403_errors}. Next retry in {self.reconnect_interval} seconds.")
+                    else:
+                        # For other failures, use normal reconnect interval
+                        self.reconnect_interval = 5
                     
             except asyncio.CancelledError:
                 break
             except Exception as e:
                 logger.error(f"[{self.agent_name}] Reconnection error: {e}")
+                
+                # Check if this was a connection limit error
+                if "403" in str(e) or "connection limit" in str(e).lower():
+                    consecutive_403_errors += 1
+                    # Exponential backoff for connection limit errors: 1min, 2min, 4min, 8min, max 16min
+                    self.reconnect_interval = min(60 * (2 ** (consecutive_403_errors - 1)), 960)
+                    logger.warning(f"[{self.agent_name}] Connection limit error #{consecutive_403_errors}. Next retry in {self.reconnect_interval} seconds.")
+                else:
+                    # For other errors, use normal reconnect interval
+                    self.reconnect_interval = 5
     
     def _get_agent_capabilities(self) -> Dict[str, Any]:
         """Get agent-specific capabilities."""

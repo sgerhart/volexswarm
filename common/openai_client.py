@@ -71,7 +71,7 @@ class VolexSwarmOpenAIClient:
             return len(text) // 4
     
     async def generate_completion(self, messages: List[Dict[str, str]], max_tokens: Optional[int] = None, temperature: Optional[float] = None) -> str:
-        """Generate async completion for conversational AI."""
+        """Generate async completion for AI agents."""
         if not self.client:
             raise Exception("OpenAI client not initialized")
         

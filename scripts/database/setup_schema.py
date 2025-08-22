@@ -16,7 +16,7 @@ from common.models import Base
 
 # Database configuration
 DB_CONFIG = {
-    "host": "localhost",  # Use localhost for local development
+    "host": "172.18.0.3",  # Use Docker container IP for SQLAlchemy connection
     "port": "5432",
     "database": "volextrades",
     "user": "volex",

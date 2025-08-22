@@ -1,3 +1,6 @@
+# =============================================================================
+# CORE DEPENDENCIES - Essential packages for the system
+# =============================================================================
 fastapi
 uvicorn[standard]
 websockets
@@ -15,11 +18,18 @@ hvac
 python-dotenv
 redis
 kafka-python
-openai
-tiktoken
+openai==1.99.8
+tiktoken>=0.5.0
 pydantic
 beautifulsoup4
 lxml
 requests
 feedparser
 cryptography
+
+# =============================================================================
+# AI & MACHINE LEARNING - Agentic framework and LLM integration
+# =============================================================================
+autogen==0.9.7
+langchain>=0.2.0
+langchain-openai>=0.1.0

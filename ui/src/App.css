@@ -1,0 +1,88 @@
+/* VolexSwarm Dashboard Styles */
+
+.App {
+  text-align: left;
+}
+
+/* Custom scrollbar for dark theme */
+::-webkit-scrollbar {
+  width: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: #1a1a1a;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #555;
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #777;
+}
+
+/* Smooth transitions */
+* {
+  transition: background-color 0.2s ease, color 0.2s ease, border-color 0.2s ease;
+}
+
+/* Card hover effects */
+.MuiCard-root:hover {
+  transform: translateY(-2px);
+  transition: transform 0.2s ease;
+}
+
+/* Custom focus styles */
+.MuiButton-root:focus {
+  outline: 2px solid #90caf9;
+  outline-offset: 2px;
+}
+
+/* Status indicator animations */
+@keyframes pulse {
+  0% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.5;
+  }
+  100% {
+    opacity: 1;
+  }
+}
+
+.status-healthy {
+  animation: pulse 2s infinite;
+}
+
+/* Loading states */
+.loading-skeleton {
+  background: linear-gradient(90deg, #f0f0f0 25%, #e0e0e0 50%, #f0f0f0 75%);
+  background-size: 200% 100%;
+  animation: loading 1.5s infinite;
+}
+
+@keyframes loading {
+  0% {
+    background-position: 200% 0;
+  }
+  100% {
+    background-position: -200% 0;
+  }
+}
+
+/* Responsive adjustments */
+@media (max-width: 600px) {
+  .MuiCard-root {
+    margin-bottom: 16px;
+  }
+  
+  .MuiTypography-h4 {
+    font-size: 1.5rem;
+  }
+  
+  .MuiTypography-h6 {
+    font-size: 1rem;
+  }
+}

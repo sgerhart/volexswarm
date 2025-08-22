@@ -1,114 +1,173 @@
 """
-VolexSwarm Monitor Agent - System Health & Performance Monitoring
-Monitors system metrics, agent health, and resource utilization.
+VolexSwarm Agentic Monitor Agent - Main Entry Point
+Transforms the FastAPI monitor agent into an intelligent AutoGen AssistantAgent
+with autonomous system monitoring and health management capabilities.
 """
 
 import sys
 import os
 import asyncio
+import signal
 from datetime import datetime
 from typing import Dict, Any
-from fastapi import FastAPI
+from fastapi import FastAPI, BackgroundTasks
+
 import uvicorn
+from contextlib import asynccontextmanager
 
-# Add the parent directory to the path
-sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
+# Add the current directory to the path for local imports
+sys.path.append(os.path.dirname(__file__))
 
-from common.vault import get_vault_client, get_agent_config
-from common.db import get_db_client, health_check as db_health_check
+from agents.monitor.agentic_monitor_agent import AgenticMonitorAgent
 from common.logging import get_logger
-from common.websocket_client import AgentWebSocketClient, MessageType
 
-# Initialize structured logger
-logger = get_logger("monitor")
+logger = get_logger("agentic_monitor_main")
 
-app = FastAPI(title="VolexSwarm Monitor Agent", version="1.0.0")
-
-# Global clients
-vault_client = None
-db_client = None
-ws_client = None  # WebSocket client for real-time communication
-
-
-async def health_monitor_loop():
-    """Background task to send periodic health updates to Meta Agent."""
-    while True:
+class AgenticMonitorService:
+    """Service wrapper for the agentic monitor agent."""
+    
+    def __init__(self):
+        self.agent = None
+        self.running = False
+        
+    async def start(self):
+        """Start the agentic monitor service."""
         try:
-            if ws_client and ws_client.is_connected:
-                # Gather health metrics
-                health_data = {
-                    "status": "healthy",
-                    "db_connected": db_client is not None,
-                    "vault_connected": vault_client is not None,
-                    "monitoring_active": True,
-                    "last_health_check": datetime.utcnow().isoformat()
-                }
-                
-                await ws_client.send_health_update(health_data)
-                logger.debug("Sent health update to Meta Agent")
+            logger.info("Starting Agentic Monitor Service...")
             
-            # Wait 30 seconds before next health update
-            await asyncio.sleep(30)
+            # Initialize the agentic monitor agent
+            self.agent = AgenticMonitorAgent()
+            await self.agent.initialize_infrastructure()
+            
+            self.running = True
+            logger.info("Agentic Monitor Service started successfully")
             
         except Exception as e:
-            logger.error(f"Health monitor error: {e}")
-            await asyncio.sleep(30)  # Continue monitoring even if there's an error
-
-
-@app.on_event("startup")
-async def startup_event():
-    """Initialize the monitor agent on startup."""
-    global vault_client, db_client, ws_client
+            logger.error(f"Failed to start Agentic Monitor Service: {e}")
+            raise
     
+    async def stop(self):
+        """Stop the agentic monitor service."""
+        try:
+            logger.info("Stopping Agentic Monitor Service...")
+            self.running = False
+            
+            if self.agent:
+                # Cleanup if needed
+                pass
+            
+            logger.info("Agentic Monitor Service stopped successfully")
+            
+        except Exception as e:
+            logger.error(f"Error stopping Agentic Monitor Service: {e}")
+    
+    def get_status(self) -> Dict[str, Any]:
+        """Get service status."""
+        if self.agent:
+            return self.agent.get_agent_status()
+        else:
+            return {
+                "agent_type": "agentic_monitor",
+                "status": "not_initialized"
+            }
+
+# Global service instance
+service = AgenticMonitorService()
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Startup
     try:
-        # Initialize Vault client
-        vault_client = get_vault_client()
-        logger.info("Vault client initialized")
-        
-        # Initialize database client
-        db_client = get_db_client()
-        logger.info("Database client initialized")
-        
-        # Initialize WebSocket client for real-time communication
-        ws_client = AgentWebSocketClient("monitor")
-        await ws_client.connect()
-        logger.info("WebSocket client connected to Meta Agent")
-        
-        # Start health monitoring background task
-        asyncio.create_task(health_monitor_loop())
-        
-        logger.info("Monitor agent initialized successfully")
-        
+        await service.start()
     except Exception as e:
-        logger.error(f"Failed to initialize monitor agent: {str(e)}")
-        raise
+        logger.error(f"Failed to start service in lifespan: {e}")
+    yield
+    # Shutdown
+    try:
+        await service.stop()
+    except Exception as e:
+        logger.error(f"Failed to stop service in lifespan: {e}")
 
+# Create FastAPI app
+app = FastAPI(title="VolexSwarm Monitor Agent", lifespan=lifespan)
 
-@app.get("/")
-def read_root():
-    """Health check endpoint."""
-    return {
-        "agent": "monitor",
-        "status": "running",
-        "version": "1.0.0",
-        "vault_connected": vault_client.health_check() if vault_client else False,
-        "db_connected": db_health_check() if db_client else False
-    }
 
 
 @app.get("/health")
-def health_check():
-    """Detailed health check endpoint."""
-    return {
-        "status": "healthy",
-        "timestamp": datetime.utcnow().isoformat(),
-        "services": {
-            "vault": vault_client.health_check() if vault_client else False,
-            "database": db_health_check() if db_client else False,
-            "websocket": ws_client.is_connected if ws_client else False
+async def health_check():
+    """Health check endpoint for the Monitor Agent."""
+    try:
+        status = service.get_status()
+        
+        # Calculate actual uptime
+        uptime_str = "0h 0m"
+        if 'start_time' in globals() and start_time:
+            uptime_delta = datetime.now() - start_time
+            hours = int(uptime_delta.total_seconds() // 3600)
+            minutes = int((uptime_delta.total_seconds() % 3600) // 60)
+            uptime_str = f"{hours}h {minutes}m"
+        
+        # Get real metrics from the agent
+        metrics = {}
+        if service and service.agent:
+            # Get database connectivity
+            try:
+                agent = service.agent
+                if hasattr(agent, 'db_client') and agent.db_client:
+                    metrics["database"] = {"status": "connected"}
+                else:
+                    metrics["database"] = {"status": "disconnected"}
+            except Exception as e:
+                metrics["database"] = {"status": "error", "error": str(e)}
+            
+            # Get vault connectivity  
+            try:
+                if hasattr(agent, 'vault_client') and agent.vault_client:
+                    metrics["vault"] = {"status": "connected"}
+                else:
+                    metrics["vault"] = {"status": "disconnected"}
+            except Exception as e:
+                metrics["vault"] = {"status": "error", "error": str(e)}
+            
+            # Get websocket connectivity
+            try:
+                if hasattr(agent, 'ws_client') and agent.ws_client and agent.ws_client.connected:
+                    metrics["websocket"] = {"status": "connected"}
+                else:
+                    metrics["websocket"] = {"status": "disconnected"}
+            except Exception as e:
+                metrics["websocket"] = {"status": "error", "error": str(e)}
+        
+        return {
+            "status": "healthy",
+            "agent": "monitor",
+            "timestamp": datetime.now().isoformat(),
+            "uptime": uptime_str,
+            "connectivity": metrics,
+            "agent_status": status
         }
-    }
+    except Exception as e:
+        return {
+            "status": "unhealthy",
+            "agent": "monitor",
+            "timestamp": datetime.now().isoformat(),
+            "error": str(e)
+        }
 
+@app.get("/")
+async def root():
+    """Root endpoint."""
+    return {"message": "VolexSwarm Monitor Agent", "status": "running"}
+
+def signal_handler(signum, frame):
+    """Handle shutdown signals."""
+    logger.info(f"Received signal {signum}, shutting down...")
+    asyncio.create_task(service.stop())
 
 if __name__ == "__main__":
+    # Set up signal handlers
+    signal.signal(signal.SIGINT, signal_handler)
+    signal.signal(signal.SIGTERM, signal_handler)
+    
+    # Run the FastAPI server
     uvicorn.run(app, host="0.0.0.0", port=8008)

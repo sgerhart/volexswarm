@@ -1,36 +1,81 @@
 """
-VolexSwarm Execution Agent - Order Execution and Trade Management
-Handles order placement, position tracking, and trade execution with CCXT integration.
+VolexSwarm Agentic Execution Agent - Main Entry Point
+Transforms the FastAPI execution agent into an intelligent AutoGen AssistantAgent
+with autonomous trade execution and order management capabilities.
 """
 
 import sys
 import os
-import logging
 import asyncio
-import ccxt
-import ccxt.async_support as ccxt_async
-from datetime import datetime, timedelta
-from typing import Dict, Any, Optional, List, Tuple
-from fastapi import FastAPI, HTTPException, BackgroundTasks
+import signal
+from datetime import datetime
+from typing import Dict, Any
+from fastapi import FastAPI, BackgroundTasks, Body
 from fastapi.middleware.cors import CORSMiddleware
+
 import uvicorn
-from pydantic import BaseModel
-import time
-import json
+from contextlib import asynccontextmanager
 
-# Add the parent directory to the path
-sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
+# Add the project root to the path
+sys.path.insert(0, '/app')
+sys.path.insert(0, '/app/agents/execution')
 
-from common.vault import get_vault_client, get_exchange_credentials, get_agent_config
-from common.db import get_db_client, health_check as db_health_check
+from agentic_execution_agent import AgenticExecutionAgent
 from common.logging import get_logger
-from common.models import Trade, Order
-from common.websocket_client import AgentWebSocketClient, MessageType
 
-# Initialize structured logger
-logger = get_logger("execution")
+logger = get_logger("agentic_execution_main")
 
-app = FastAPI(title="VolexSwarm Execution Agent", version="1.0.0")
+# Global service instance
+execution_service = None
+start_time = None
+
+async def scheduled_portfolio_collection():
+    """Background task that collects portfolio snapshots at regular intervals."""
+    while True:
+        try:
+            if execution_service and execution_service.agent:
+                logger.info("🕐 Scheduled portfolio collection triggered")
+                await execution_service.agent.store_current_portfolio_snapshot()
+            else:
+                logger.warning("Portfolio collection skipped - service not ready")
+            
+            # Wait 15 minutes (900 seconds) before next collection
+            await asyncio.sleep(900)
+            
+        except asyncio.CancelledError:
+            logger.info("Portfolio collection task cancelled")
+            break
+        except Exception as e:
+            logger.error(f"Error in scheduled portfolio collection: {e}")
+            # Wait 5 minutes before retrying on error
+            await asyncio.sleep(300)
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Startup
+    global execution_service, start_time
+    start_time = datetime.now()
+    execution_service = AgenticExecutionService()
+    await execution_service.start()
+    
+    # Start portfolio collection scheduler
+    portfolio_task = asyncio.create_task(scheduled_portfolio_collection())
+    
+    yield
+    
+    # Shutdown
+    if portfolio_task:
+        portfolio_task.cancel()
+        try:
+            await portfolio_task
+        except asyncio.CancelledError:
+            pass
+    
+    if execution_service:
+        await execution_service.stop()
+
+# Create FastAPI app
+app = FastAPI(title="VolexSwarm Execution Agent", lifespan=lifespan)
 
 # Add CORS middleware
 app.add_middleware(
@@ -41,531 +86,611 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Global clients
-vault_client = None
-db_client = None
-ws_client = None  # WebSocket client for real-time communication
-exchanges = {}  # Exchange instances
-dry_run_mode = True  # Default to dry run for safety
-
-
-class OrderRequest(BaseModel):
-    """Request model for order placement."""
-    symbol: str
-    side: str  # 'buy' or 'sell'
-    order_type: str = 'market'  # 'market', 'limit', 'stop'
-    amount: Optional[float] = None
-    price: Optional[float] = None
-    stop_price: Optional[float] = None
-    exchange: str = 'binanceus'  # Default to Binance.US for US compliance
-
-
-class PositionResponse(BaseModel):
-    """Response model for position information."""
-    symbol: str
-    side: str
-    amount: float
-    entry_price: float
-    current_price: float
-    unrealized_pnl: float
-    realized_pnl: float
-    timestamp: datetime
-
-
-class OrderResponse(BaseModel):
-    """Response model for order information."""
-    id: str
-    symbol: str
-    side: str
-    order_type: str
-    amount: float
-    price: Optional[float]
-    status: str
-    filled: float
-    remaining: float
-    cost: float
-    timestamp: datetime
-    exchange: str
-
-
-class ExchangeManager:
-    """Manages exchange connections and operations."""
-    
-    def __init__(self):
-        self.exchanges = {}
-        self.rate_limits = {}
-        self.last_request_time = {}
-        
-    async def initialize_exchanges(self):
-        """Initialize exchange connections."""
-        try:
-            # Get exchange credentials from Vault
-            exchanges_config = get_agent_config("execution")
-            enabled_exchanges = exchanges_config.get("enabled_exchanges", ["binanceus"])
-            
-            for exchange_name in enabled_exchanges:
-                try:
-                    credentials = get_exchange_credentials(exchange_name)
-                    if not credentials:
-                        logger.warning(f"No credentials found for {exchange_name}")
-                        continue
-                    
-                    # Initialize exchange
-                    exchange_class = getattr(ccxt_async, exchange_name)
-                    exchange = exchange_class({
-                        'apiKey': credentials.get('api_key'),
-                        'secret': credentials.get('secret_key'),
-                        'sandbox': dry_run_mode,  # Use sandbox in dry run mode
-                        'enableRateLimit': True,
-                        'options': {
-                            'defaultType': 'spot',  # Default to spot trading
-                        }
-                    })
-                    
-                    # Test connection
-                    await exchange.load_markets()
-                    logger.info(f"Successfully connected to {exchange_name}")
-                    
-                    self.exchanges[exchange_name] = exchange
-                    self.rate_limits[exchange_name] = exchange.rateLimit
-                    self.last_request_time[exchange_name] = 0
-                    
-                except Exception as e:
-                    logger.error(f"Failed to initialize {exchange_name}: {str(e)}")
-                    
-        except Exception as e:
-            logger.error(f"Failed to initialize exchanges: {str(e)}")
-    
-    async def close_exchanges(self):
-        """Close all exchange connections."""
-        for exchange_name, exchange in self.exchanges.items():
-            try:
-                await exchange.close()
-                logger.info(f"Closed connection to {exchange_name}")
-            except Exception as e:
-                logger.error(f"Error closing {exchange_name}: {str(e)}")
-    
-    async def get_balance(self, exchange_name: str, currency: str = 'USDT') -> Dict[str, Any]:
-        """Get account balance for a specific currency."""
-        try:
-            exchange = self.exchanges.get(exchange_name)
-            if not exchange:
-                raise HTTPException(status_code=400, detail=f"Exchange {exchange_name} not available")
-            
-            balance = await exchange.fetch_balance()
-            return {
-                'currency': currency,
-                'free': balance.get(currency, {}).get('free', 0),
-                'used': balance.get(currency, {}).get('used', 0),
-                'total': balance.get(currency, {}).get('total', 0)
-            }
-        except Exception as e:
-            logger.error(f"Error fetching balance from {exchange_name}: {str(e)}")
-            raise HTTPException(status_code=500, detail=f"Failed to fetch balance: {str(e)}")
-    
-    async def get_ticker(self, exchange_name: str, symbol: str) -> Dict[str, Any]:
-        """Get current ticker for a symbol."""
-        try:
-            exchange = self.exchanges.get(exchange_name)
-            if not exchange:
-                raise HTTPException(status_code=400, detail=f"Exchange {exchange_name} not available")
-            
-            ticker = await exchange.fetch_ticker(symbol)
-            return {
-                'symbol': symbol,
-                'last': ticker['last'],
-                'bid': ticker['bid'],
-                'ask': ticker['ask'],
-                'volume': ticker['baseVolume'],
-                'timestamp': datetime.fromtimestamp(ticker['timestamp'] / 1000)
-            }
-        except Exception as e:
-            logger.error(f"Error fetching ticker from {exchange_name}: {str(e)}")
-            raise HTTPException(status_code=500, detail=f"Failed to fetch ticker: {str(e)}")
-    
-    async def place_order(self, exchange_name: str, order_request: OrderRequest) -> Dict[str, Any]:
-        """Place an order on the exchange."""
-        try:
-            exchange = self.exchanges.get(exchange_name)
-            if not exchange:
-                raise HTTPException(status_code=400, detail=f"Exchange {exchange_name} not available")
-            
-            # Validate order parameters
-            if order_request.order_type == 'limit' and not order_request.price:
-                raise HTTPException(status_code=400, detail="Price required for limit orders")
-            
-            if order_request.order_type == 'stop' and not order_request.stop_price:
-                raise HTTPException(status_code=400, detail="Stop price required for stop orders")
-            
-            # Prepare order parameters
-            order_params = {
-                'symbol': order_request.symbol,
-                'type': order_request.order_type,
-                'side': order_request.side,
-            }
-            
-            if order_request.amount:
-                order_params['amount'] = order_request.amount
-            
-            if order_request.price:
-                order_params['price'] = order_request.price
-            
-            if order_request.stop_price:
-                order_params['stopPrice'] = order_request.stop_price
-            
-            # Place order
-            if dry_run_mode:
-                # Simulate order placement in dry run mode
-                logger.info(f"DRY RUN: Would place order: {order_params}")
-                return {
-                    'id': f"dry_run_{int(time.time())}",
-                    'symbol': order_request.symbol,
-                    'side': order_request.side,
-                    'type': order_request.order_type,
-                    'amount': order_request.amount,
-                    'price': order_request.price,
-                    'status': 'closed',
-                    'filled': order_request.amount or 0,
-                    'remaining': 0,
-                    'cost': (order_request.amount or 0) * (order_request.price or 0),
-                    'timestamp': datetime.now(),
-                    'exchange': exchange_name,
-                    'dry_run': True
-                }
-            else:
-                order = await exchange.create_order(**order_params)
-                return {
-                    'id': order['id'],
-                    'symbol': order['symbol'],
-                    'side': order['side'],
-                    'type': order['type'],
-                    'amount': order['amount'],
-                    'price': order.get('price'),
-                    'status': order['status'],
-                    'filled': order.get('filled', 0),
-                    'remaining': order.get('remaining', 0),
-                    'cost': order.get('cost', 0),
-                    'timestamp': datetime.fromtimestamp(order['timestamp'] / 1000),
-                    'exchange': exchange_name,
-                    'dry_run': False
-                }
-                
-        except Exception as e:
-            logger.error(f"Error placing order on {exchange_name}: {str(e)}")
-            raise HTTPException(status_code=500, detail=f"Failed to place order: {str(e)}")
-    
-    async def get_positions(self, exchange_name: str) -> List[Dict[str, Any]]:
-        """Get current positions."""
-        try:
-            exchange = self.exchanges.get(exchange_name)
-            if not exchange:
-                raise HTTPException(status_code=400, detail=f"Exchange {exchange_name} not available")
-            
-            # Get balance to find positions
-            balance = await exchange.fetch_balance()
-            positions = []
-            
-            for currency, balance_info in balance.items():
-                if balance_info['total'] > 0 and currency != 'USDT':
-                    # Get current price for PnL calculation
-                    try:
-                        ticker = await exchange.fetch_ticker(f"{currency}/USDT")
-                        current_price = ticker['last']
-                        
-                        positions.append({
-                            'symbol': f"{currency}/USDT",
-                            'side': 'long' if balance_info['total'] > 0 else 'short',
-                            'amount': balance_info['total'],
-                            'entry_price': 0,  # Would need to track from trade history
-                            'current_price': current_price,
-                            'unrealized_pnl': 0,  # Would need to calculate from entry
-                            'realized_pnl': 0,
-                            'timestamp': datetime.now()
-                        })
-                    except:
-                        # Skip if we can't get price for this currency
-                        continue
-            
-            return positions
-            
-        except Exception as e:
-            logger.error(f"Error fetching positions from {exchange_name}: {str(e)}")
-            raise HTTPException(status_code=500, detail=f"Failed to fetch positions: {str(e)}")
-    
-    async def get_order_history(self, exchange_name: str, symbol: Optional[str] = None, limit: int = 100) -> List[Dict[str, Any]]:
-        """Get order history."""
-        try:
-            exchange = self.exchanges.get(exchange_name)
-            if not exchange:
-                raise HTTPException(status_code=400, detail=f"Exchange {exchange_name} not available")
-            
-            orders = await exchange.fetch_orders(symbol, limit=limit)
-            
-            return [{
-                'id': order['id'],
-                'symbol': order['symbol'],
-                'side': order['side'],
-                'type': order['type'],
-                'amount': order['amount'],
-                'price': order.get('price'),
-                'status': order['status'],
-                'filled': order.get('filled', 0),
-                'remaining': order.get('remaining', 0),
-                'cost': order.get('cost', 0),
-                'timestamp': datetime.fromtimestamp(order['timestamp'] / 1000),
-                'exchange': exchange_name
-            } for order in orders]
-            
-        except Exception as e:
-            logger.error(f"Error fetching order history from {exchange_name}: {str(e)}")
-            raise HTTPException(status_code=500, detail=f"Failed to fetch order history: {str(e)}")
-
-
-# Global exchange manager
-exchange_manager = ExchangeManager()
-
-
-async def health_monitor_loop():
-    """Background task to send periodic health updates to Meta Agent."""
-    while True:
-        try:
-            if ws_client and ws_client.is_connected:
-                # Gather health metrics
-                health_data = {
-                    "status": "healthy",
-                    "dry_run_mode": dry_run_mode,
-                    "db_connected": db_client is not None,
-                    "vault_connected": vault_client is not None,
-                    "exchange_count": len(exchanges),
-                    "last_health_check": datetime.utcnow().isoformat()
-                }
-                
-                await ws_client.send_health_update(health_data)
-                logger.debug("Sent health update to Meta Agent")
-            
-            # Wait 30 seconds before next health update
-            await asyncio.sleep(30)
-            
-        except Exception as e:
-            logger.error(f"Health monitor error: {e}")
-            await asyncio.sleep(30)  # Continue monitoring even if there's an error
-
-
-@app.on_event("startup")
-async def startup_event():
-    """Initialize the execution agent on startup."""
-    global vault_client, db_client, ws_client, dry_run_mode
-    
-    try:
-        # Initialize Vault client
-        vault_client = get_vault_client()
-        logger.info("Vault client initialized")
-        
-        # Initialize database client
-        db_client = get_db_client()
-        logger.info("Database client initialized")
-        
-        # Initialize WebSocket client for real-time communication
-        ws_client = AgentWebSocketClient("execution")
-        await ws_client.connect()
-        logger.info("WebSocket client connected to Meta Agent")
-        
-        # Load agent configuration
-        config = get_agent_config("execution")
-        if config is None:
-            # Fallback configuration if not found in Vault
-            config = {
-                "dry_run_mode": True,
-                "default_exchange": "binanceus",
-                "max_order_size": 100.0,
-                "risk_limit": 0.02
-            }
-            logger.warning("No configuration found in Vault, using fallback configuration")
-        
-        dry_run_mode = config.get("dry_run_mode", True)
-        logger.info(f"Execution agent started in {'DRY RUN' if dry_run_mode else 'LIVE'} mode")
-        
-        # Initialize exchanges
-        await exchange_manager.initialize_exchanges()
-        logger.info("Exchange connections initialized")
-        
-        # Start health monitoring background task
-        asyncio.create_task(health_monitor_loop())
-        
-    except Exception as e:
-        logger.error(f"Failed to initialize execution agent: {str(e)}")
-        raise
-
-
-@app.on_event("shutdown")
-async def shutdown_event():
-    """Cleanup on shutdown."""
-    try:
-        await exchange_manager.close_exchanges()
-        logger.info("Execution agent shutdown complete")
-    except Exception as e:
-        logger.error(f"Error during shutdown: {str(e)}")
-
 
 @app.get("/health")
-def health_check():
-    """Health check endpoint."""
+async def health_check():
+    """Health check endpoint for the Execution Agent."""
+    from fastapi.responses import JSONResponse
+    global execution_service
     try:
-        # Check Vault connection
-        vault_health = vault_client.health_check() if vault_client else False
-        
-        # Check database connection
-        db_health = db_health_check() if db_client else False
-        
-        # Check exchange connections
-        exchange_health = len(exchange_manager.exchanges) > 0
-        
-        return {
-            "status": "healthy" if all([vault_health, db_health, exchange_health]) else "unhealthy",
-            "timestamp": datetime.now(),
-            "components": {
-                "vault": vault_health,
-                "database": db_health,
-                "exchanges": exchange_health,
-                "dry_run_mode": dry_run_mode
-            },
-            "exchanges": list(exchange_manager.exchanges.keys())
-        }
+        if execution_service and execution_service.running:
+            # Calculate actual uptime
+            uptime_str = "0h 0m"
+            if 'start_time' in globals() and start_time:
+                uptime_delta = datetime.now() - start_time
+                hours = int(uptime_delta.total_seconds() // 3600)
+                minutes = int((uptime_delta.total_seconds() % 3600) // 60)
+                uptime_str = f"{hours}h {minutes}m"
+            
+            # Get real metrics from the agent
+            metrics = {}
+            if execution_service.agent:
+                # Get database connectivity
+                try:
+                    if hasattr(execution_service.agent, 'db_client') and execution_service.agent.db_client:
+                        metrics["database"] = {"status": "connected"}
+                    else:
+                        metrics["database"] = {"status": "disconnected"}
+                except Exception as e:
+                    metrics["database"] = {"status": "error", "error": str(e)}
+                
+                # Get vault connectivity  
+                try:
+                    if hasattr(execution_service.agent, 'vault_client') and execution_service.agent.vault_client:
+                        metrics["vault"] = {"status": "connected"}
+                    else:
+                        metrics["vault"] = {"status": "disconnected"}
+                except Exception as e:
+                    metrics["vault"] = {"status": "error", "error": str(e)}
+                
+                # Get websocket connectivity
+                try:
+                    if hasattr(execution_service.agent, 'ws_client') and execution_service.agent.ws_client:
+                        # Check if websocket is connected
+                        if hasattr(execution_service.agent.ws_client, 'connected') and execution_service.agent.ws_client.connected:
+                            metrics["websocket"] = {"status": "connected"}
+                        else:
+                            metrics["websocket"] = {"status": "disconnected"}
+                    else:
+                        metrics["websocket"] = {"status": "not_initialized"}
+                except Exception as e:
+                    metrics["websocket"] = {"status": "error", "error": str(e)}
+                
+                # Get trade execution metrics
+                try:
+                    if hasattr(execution_service.agent, 'db_client') and execution_service.agent.db_client:
+                        trade_count = await execution_service.agent.db_client.fetch(
+                            "SELECT COUNT(*) as count FROM trades WHERE created_at > NOW() - INTERVAL '24 hours'"
+                        )
+                        metrics["trades_24h"] = trade_count[0]['count'] if trade_count else 0
+                except Exception:
+                    metrics["trades_24h"] = 0
+            
+            response_data = {
+                "status": "healthy",
+                "agent": "execution",
+                "timestamp": datetime.now().isoformat(),
+                "uptime": uptime_str,
+                "connectivity": metrics
+            }
+        else:
+            response_data = {
+                "status": "unhealthy",
+                "agent": "execution",
+                "timestamp": datetime.now().isoformat(),
+                "error": "Service not running"
+            }
     except Exception as e:
-        logger.error(f"Health check failed: {str(e)}")
-        return {
+        response_data = {
             "status": "unhealthy",
-            "timestamp": datetime.now(),
+            "agent": "execution",
+            "timestamp": datetime.now().isoformat(),
             "error": str(e)
         }
-
-
-@app.get("/balance/{exchange_name}")
-async def get_balance(exchange_name: str, currency: str = 'USDT'):
-    """Get account balance for a specific exchange and currency."""
-    return await exchange_manager.get_balance(exchange_name, currency)
-
-
-@app.get("/ticker/{exchange_name}/{symbol}")
-async def get_ticker(exchange_name: str, symbol: str):
-    """Get current ticker for a symbol."""
-    return await exchange_manager.get_ticker(exchange_name, symbol)
-
-
-@app.post("/orders")
-async def place_order(order_request: OrderRequest):
-    """Place an order on the specified exchange."""
-    order_result = await exchange_manager.place_order(order_request.exchange, order_request)
     
-    # Log the order
-    logger.info(f"Order placed: {order_result}")
-    
-    # Store in database if not dry run
-    if not dry_run_mode and db_client:
-        try:
-            # Store order
-            order = Order(
-                order_id=order_result['id'],
-                symbol=order_result['symbol'],
-                side=order_result['side'],
-                order_type=order_result['type'],
-                quantity=order_result['amount'],
-                price=order_result['price'],
-                status=order_result['status'],
-                filled_quantity=order_result['filled'],
-                remaining_quantity=order_result['remaining'],
-                cost=order_result['cost'],
-                created_at=order_result['timestamp']
-            )
-            db_client.add(order)
-            
-            # Store trade if order is filled
-            if order_result['status'] == 'closed' or order_result['filled'] > 0:
-                trade = Trade(
-                    symbol=order_result['symbol'],
-                    side=order_result['side'],
-                    quantity=order_result['amount'],
-                    price=order_result['price'],
-                    executed_at=order_result['timestamp'],
-                    trade_id=order_result['id'],
-                    order_id=order_result['id'],
-                    exchange=order_result['exchange'],
-                    order_type=order_result['type'],
-                    status=order_result['status']
-                )
-                db_client.add(trade)
-            
-            db_client.commit()
-        except Exception as e:
-            logger.error(f"Failed to store order/trade in database: {str(e)}")
-    
-    # Broadcast trade update via WebSocket
-    if ws_client and ws_client.is_connected:
-        trade_data = {
-            "order_id": order_result['id'],
-            "symbol": order_result['symbol'],
-            "side": order_result['side'],
-            "quantity": order_result['amount'],
-            "price": order_result['price'],
-            "status": order_result['status'],
-            "filled": order_result['filled'],
-            "cost": order_result['cost'],
-            "timestamp": order_result['timestamp'],
-            "exchange": order_request.exchange,
-            "dry_run": dry_run_mode
-        }
-        asyncio.create_task(ws_client.send_trade_update(trade_data))
-        logger.debug(f"Broadcasted trade update for {order_result['symbol']} via WebSocket")
-    
-    return order_result
+    return JSONResponse(content=response_data)
 
+@app.get("/")
+async def root():
+    """Root endpoint."""
+    return {"message": "VolexSwarm Execution Agent", "status": "running"}
 
-@app.get("/positions/{exchange_name}")
-async def get_positions(exchange_name: str):
-    """Get current positions for an exchange."""
-    return await exchange_manager.get_positions(exchange_name)
-
-
-@app.get("/orders/{exchange_name}")
-async def get_order_history(exchange_name: str, symbol: Optional[str] = None, limit: int = 100):
-    """Get order history for an exchange."""
-    return await exchange_manager.get_order_history(exchange_name, symbol, limit)
-
-
-@app.get("/exchanges")
-def get_available_exchanges():
-    """Get list of available exchanges."""
-    return {
-        "available_exchanges": list(exchange_manager.exchanges.keys()),
-        "dry_run_mode": dry_run_mode
-    }
-
-
-@app.get("/exchanges/{exchange_name}/status")
-async def get_exchange_status(exchange_name: str):
-    """Get status of a specific exchange."""
+@app.get("/api/execution/portfolio")
+async def get_portfolio():
+    """Get current portfolio status and positions."""
+    global execution_service
     try:
-        exchange = exchange_manager.exchanges.get(exchange_name)
-        if not exchange:
-            raise HTTPException(status_code=404, detail=f"Exchange {exchange_name} not found")
-        
-        # Test connection by fetching markets
-        await exchange.load_markets()
-        
+        if execution_service and execution_service.agent:
+            portfolio_data = await execution_service.agent.get_portfolio_status()
+            return portfolio_data
+        else:
+            return {"error": "Service not running"}
+    except Exception as e:
+        return {"error": str(e)}
+
+@app.get("/api/execution/positions")
+async def get_positions():
+    """Get current positions with P&L."""
+    global execution_service
+    try:
+        if execution_service and execution_service.agent:
+            positions = await execution_service.agent.get_real_time_positions()
+            return {"positions": positions, "timestamp": datetime.now().isoformat()}
+        else:
+            return {"error": "Service not running"}
+    except Exception as e:
+        return {"error": str(e)}
+
+@app.get("/api/execution/pnl")
+async def get_portfolio_pnl():
+    """Get portfolio P&L information."""
+    global execution_service
+    try:
+        if execution_service and execution_service.agent:
+            pnl_data = await execution_service.agent.get_portfolio_pnl()
+            return pnl_data
+        else:
+            return {"error": "Service not running"}
+    except Exception as e:
+        return {"error": str(e)}
+
+@app.get("/api/execution/trades")
+async def get_recent_trades(limit: int = 50):
+    """Get recent trades from the database."""
+    global execution_service
+    try:
+        if execution_service and execution_service.agent:
+            # Query trades from database
+            query = """
+                SELECT 
+                    t.symbol, t.side, t.quantity, t.price, t.executed_at,
+                    t.fees, t.fees_currency, t.trade_metadata
+                FROM trades t
+                ORDER BY t.executed_at DESC
+                LIMIT $1
+            """
+            trades = await execution_service.agent.db_client.fetch(query, limit)
+            return {"trades": trades, "count": len(trades), "timestamp": datetime.now().isoformat()}
+        else:
+            return {"error": "Service not running"}
+    except Exception as e:
+        return {"error": str(e)}
+
+@app.get("/api/execution/performance")
+async def get_performance():
+    """Get execution performance metrics."""
+    try:
+        if execution_service and execution_service.agent:
+            performance_data = await execution_service.agent.get_portfolio_performance()
+            return performance_data
+        else:
+            return {"error": "Performance metrics not available"}
+    except Exception as e:
+        if execution_service and execution_service.agent:
+            return {"error": str(e)}
+        else:
+            return {"error": "Service not running"}
+
+@app.get("/api/execution/portfolio-performance")
+async def get_portfolio_performance():
+    """Get comprehensive portfolio performance including total return."""
+    try:
+        if execution_service and execution_service.agent:
+            performance_data = await execution_service.agent.get_portfolio_performance()
+            return performance_data
+        else:
+            return {"error": "Portfolio performance not available"}
+    except Exception as e:
+        if execution_service and execution_service.agent:
+            return {"error": str(e)}
+        else:
+            return {"error": "Service not running"}
+
+
+@app.get("/api/execution/portfolio-history")
+async def get_portfolio_history(days: int = 30):
+    """Get portfolio history data for charting."""
+    try:
+        if execution_service and execution_service.agent:
+            # Get the history data (portfolio collection handled separately by scheduler)
+            history_data = await execution_service.agent.get_portfolio_history("binance", days)
+            return {
+                "exchange": "binance",
+                "days_requested": days,
+                "data_points": history_data,
+                "timestamp": datetime.now().isoformat()
+            }
+        else:
+            return {"error": "Portfolio history not available"}
+    except Exception as e:
+        return {"error": str(e)}
+
+
+@app.post("/api/execution/store-portfolio-snapshot")
+async def store_portfolio_snapshot():
+    """Manually trigger portfolio snapshot storage."""
+    try:
+        if execution_service and execution_service.agent:
+            success = await execution_service.agent.store_current_portfolio_snapshot()
+            return {
+                "success": success,
+                "message": "Portfolio snapshot stored successfully" if success else "Failed to store portfolio snapshot",
+                "timestamp": datetime.now().isoformat()
+            }
+        else:
+            return {"error": "Execution service not available"}
+    except Exception as e:
+        return {"error": str(e)}
+
+
+@app.get("/api/execution/portfolio-collection-config")
+async def get_portfolio_collection_config():
+    """Get portfolio collection configuration."""
+    try:
+        from common.config_manager import config_manager
+        config = await config_manager.get_portfolio_collection_config()
         return {
-            "exchange": exchange_name,
-            "status": "connected",
-            "timestamp": datetime.now(),
-            "markets_count": len(exchange.markets)
+            "success": True,
+            "config": config,
+            "timestamp": datetime.now().isoformat()
         }
     except Exception as e:
-        return {
-            "exchange": exchange_name,
-            "status": "disconnected",
-            "timestamp": datetime.now(),
-            "error": str(e)
-        }
+        return {"error": str(e)}
 
+
+@app.post("/api/execution/update-portfolio-collection-config")
+async def update_portfolio_collection_config(updates: Dict[str, Any]):
+    """Update portfolio collection configuration."""
+    try:
+        from common.config_manager import config_manager
+        success = await config_manager.update_portfolio_collection_config(updates)
+        return {
+            "success": success,
+            "message": "Portfolio collection config updated successfully" if success else "Failed to update config",
+            "timestamp": datetime.now().isoformat()
+        }
+    except Exception as e:
+        return {"error": str(e)}
+
+
+@app.post("/api/execution/force-portfolio-snapshot")
+async def force_portfolio_snapshot():
+    """Force portfolio snapshot collection regardless of smart logic."""
+    try:
+        if execution_service and execution_service.agent:
+            success = await execution_service.agent.store_current_portfolio_snapshot(force_collection=True)
+            return {
+                "success": success,
+                "message": "Portfolio snapshot forced successfully" if success else "Failed to force portfolio snapshot",
+                "timestamp": datetime.now().isoformat()
+            }
+        else:
+            return {"error": "Execution service not available"}
+    except Exception as e:
+        return {"error": str(e)}
+
+
+@app.post("/api/execution/place-order")
+async def place_order(order_request: Dict[str, Any]):
+    """Place a trading order."""
+    try:
+        if execution_service and execution_service.agent:
+            # Extract order parameters
+            symbol = order_request.get("symbol")
+            side = order_request.get("side")  # "buy" or "sell"
+            amount = order_request.get("amount")
+            order_type = order_request.get("order_type", "market")
+            price = order_request.get("price")
+            exchange = order_request.get("exchange", "binance")
+            
+            # Validate required parameters
+            if not all([symbol, side, amount]):
+                return {"error": "Missing required parameters: symbol, side, amount"}
+            
+            # Execute the trade
+            result = await execution_service.agent.execute_trade(
+                symbol=symbol,
+                side=side,
+                amount=amount,
+                order_type=order_type,
+                price=price,
+                exchange=exchange
+            )
+            
+            # Check if the order was actually placed successfully
+            # The WebSocket error doesn't mean the order failed
+            order_successful = "error" not in result and "order_id" in result
+            
+            return {
+                "success": order_successful,
+                "result": result,
+                "timestamp": datetime.now().isoformat(),
+                "message": "Order placed successfully" if order_successful else "Order placement failed"
+            }
+        else:
+            return {"error": "Execution service not available"}
+    except Exception as e:
+        return {"error": str(e)}
+
+
+@app.post("/api/execution/place-order-real-time")
+async def place_order_real_time(order_request: Dict[str, Any]):
+    """Place a real-time trading order with priority."""
+    try:
+        if execution_service and execution_service.agent:
+            # Extract order parameters
+            symbol = order_request.get("symbol")
+            side = order_request.get("side")  # "buy" or "sell"
+            amount = order_request.get("amount")
+            priority = order_request.get("priority", "normal")
+            exchange = order_request.get("exchange", "binance")
+            
+            # Validate required parameters
+            if not all([symbol, side, amount]):
+                return {"error": "Missing required parameters: symbol, side, amount"}
+            
+            # Execute the real-time trade
+            result = await execution_service.agent.execute_trade_real_time(
+                symbol=symbol,
+                side=side,
+                amount=amount,
+                priority=priority,
+                exchange=exchange
+            )
+            
+            return {
+                "success": "error" not in result,
+                "result": result,
+                "timestamp": datetime.now().isoformat()
+            }
+        else:
+            return {"error": "Execution service not available"}
+    except Exception as e:
+        return {"error": str(e)}
+
+
+@app.get("/api/execution/order-status/{order_id}")
+async def get_order_status(order_id: str):
+    """Get the status of a specific order."""
+    try:
+        if execution_service and execution_service.agent:
+            # For now, return simulated order status
+            # TODO: Implement real order status checking
+            return {
+                "order_id": order_id,
+                "status": "filled",
+                "symbol": "BTC/USDT",
+                "side": "buy",
+                "amount": 0.001,
+                "timestamp": datetime.now().isoformat(),
+                "message": "Order status retrieved successfully"
+            }
+        else:
+            return {"error": "Execution service not available"}
+    except Exception as e:
+        return {"error": str(e)}
+
+@app.get("/api/execution/trading-config")
+async def get_trading_config():
+    """Get current trading configuration and mode."""
+    try:
+        from common.config_manager import config_manager
+        config = await config_manager.load_trading_config()
+        
+        return {
+            "trading_mode": config.mode.value,
+            "simulation_balance": config.simulation_balance,
+            "max_simulation_risk": config.max_simulation_risk,
+            "real_trading_enabled": config.real_trading_enabled,
+            "simulation_accounts": config.simulation_accounts,
+            "real_accounts": config.real_accounts,
+            "safety_checks_enabled": config.safety_checks_enabled,
+            "max_position_size": config.max_position_size,
+            "emergency_stop_enabled": config.emergency_stop_enabled,
+            # Portfolio Collection Settings
+            "portfolio_collection_enabled": config.portfolio_collection_enabled,
+            "collection_frequency_minutes": config.collection_frequency_minutes,
+            "change_threshold_percent": config.change_threshold_percent,
+            "max_collections_per_hour": config.max_collections_per_hour,
+            "data_retention_days": config.data_retention_days,
+            "enable_compression": config.enable_compression,
+            # Risk Management Settings
+            "max_portfolio_risk": config.max_portfolio_risk,
+            "max_drawdown": config.max_drawdown,
+            "daily_loss_limit": config.daily_loss_limit,
+            "weekly_loss_limit": config.weekly_loss_limit,
+            "monthly_loss_limit": config.monthly_loss_limit,
+            "max_single_position_size": config.max_single_position_size,
+            "max_sector_exposure": config.max_sector_exposure,
+            "correlation_limit": config.correlation_limit,
+            "leverage_limit": config.leverage_limit,
+            "default_stop_loss": config.default_stop_loss,
+            "default_take_profit": config.default_take_profit,
+            "trailing_stop_enabled": config.trailing_stop_enabled,
+            "trailing_stop_distance": config.trailing_stop_distance,
+            "is_simulation": await config_manager.is_simulation_mode(),
+            "is_real_trading_enabled": await config_manager.is_real_trading_enabled(),
+            "is_hybrid": await config_manager.is_hybrid_mode()
+        }
+    except Exception as e:
+        return {"error": str(e)}
+
+@app.post("/api/execution/update-config")
+async def update_trading_config(config_update: Dict[str, Any]):
+    """Update trading configuration settings."""
+    try:
+        from common.config_manager import config_manager
+        
+        # Validate required fields
+        required_fields = ['simulation_balance', 'max_simulation_risk', 'max_position_size']
+        for field in required_fields:
+            if field not in config_update:
+                return {"error": f"Missing required field: {field}"}
+        
+        # Validate numeric values
+        try:
+            simulation_balance = float(config_update['simulation_balance'])
+            max_risk = float(config_update['max_simulation_risk'])
+            max_position = float(config_update['max_position_size'])
+            
+            if simulation_balance <= 0:
+                return {"error": "Simulation balance must be positive"}
+            if max_risk < 0 or max_risk > 1:
+                return {"error": "Max risk must be between 0 and 1 (0-100%)"}
+            if max_position < 0 or max_position > 1:
+                return {"error": "Max position size must be between 0 and 1 (0-100%)"}
+                
+        except (ValueError, TypeError):
+            return {"error": "Invalid numeric values in configuration"}
+        
+        # Prepare updates
+        updates = {
+            'simulation_balance': simulation_balance,
+            'max_simulation_risk': max_risk,
+            'max_position_size': max_position,
+            'safety_checks_enabled': config_update.get('safety_checks_enabled', True),
+            'emergency_stop_enabled': config_update.get('emergency_stop_enabled', True),
+            # Portfolio Collection Settings
+            'portfolio_collection_enabled': config_update.get('portfolio_collection_enabled', True),
+            'collection_frequency_minutes': config_update.get('collection_frequency_minutes', 15),
+            'change_threshold_percent': config_update.get('change_threshold_percent', 2.0),
+            'max_collections_per_hour': config_update.get('max_collections_per_hour', 60),
+            'data_retention_days': config_update.get('data_retention_days', 30),
+            'enable_compression': config_update.get('enable_compression', True),
+            # Risk Management Settings
+            'max_portfolio_risk': config_update.get('max_portfolio_risk', 0.05),
+            'max_drawdown': config_update.get('max_drawdown', 0.10),
+            'daily_loss_limit': config_update.get('daily_loss_limit', 1000),
+            'weekly_loss_limit': config_update.get('weekly_loss_limit', 5000),
+            'monthly_loss_limit': config_update.get('monthly_loss_limit', 20000),
+            'max_single_position_size': config_update.get('max_single_position_size', 0.20),
+            'max_sector_exposure': config_update.get('max_sector_exposure', 0.30),
+            'correlation_limit': config_update.get('correlation_limit', 0.70),
+            'leverage_limit': config_update.get('leverage_limit', 1.0),
+            'default_stop_loss': config_update.get('default_stop_loss', 0.05),
+            'default_take_profit': config_update.get('default_take_profit', 0.15),
+            'trailing_stop_enabled': config_update.get('trailing_stop_enabled', True),
+            'trailing_stop_distance': config_update.get('trailing_stop_distance', 0.03)
+        }
+        
+        # Update configuration
+        success = await config_manager.update_trading_config(updates)
+        
+        if success:
+            # Reload configuration
+            new_config = await config_manager.load_trading_config()
+            
+            return {
+                "success": True,
+                "message": "Trading configuration updated successfully",
+                "config": {
+                    "mode": new_config.mode.value,
+                    "simulation_balance": new_config.simulation_balance,
+                    "max_simulation_risk": new_config.max_simulation_risk,
+                    "real_trading_enabled": new_config.real_trading_enabled,
+                    "simulation_accounts": new_config.simulation_accounts,
+                    "real_accounts": new_config.real_accounts,
+                    "safety_checks_enabled": new_config.safety_checks_enabled,
+                    "max_position_size": new_config.max_position_size,
+                    "emergency_stop_enabled": new_config.emergency_stop_enabled,
+                    # Portfolio Collection Settings
+                    "portfolio_collection_enabled": new_config.portfolio_collection_enabled,
+                    "collection_frequency_minutes": new_config.collection_frequency_minutes,
+                    "change_threshold_percent": new_config.change_threshold_percent,
+                    "max_collections_per_hour": new_config.max_collections_per_hour,
+                    "data_retention_days": new_config.data_retention_days,
+                    "enable_compression": new_config.enable_compression,
+                    # Risk Management Settings
+                    "max_portfolio_risk": new_config.max_portfolio_risk,
+                    "max_drawdown": new_config.max_drawdown,
+                    "daily_loss_limit": new_config.daily_loss_limit,
+                    "weekly_loss_limit": new_config.weekly_loss_limit,
+                    "monthly_loss_limit": new_config.monthly_loss_limit,
+                    "max_single_position_size": new_config.max_single_position_size,
+                    "max_sector_exposure": new_config.max_sector_exposure,
+                    "correlation_limit": new_config.correlation_limit,
+                    "leverage_limit": new_config.leverage_limit,
+                    "default_stop_loss": new_config.default_stop_loss,
+                    "default_take_profit": new_config.default_take_profit,
+                    "trailing_stop_enabled": new_config.trailing_stop_enabled,
+                    "trailing_stop_distance": new_config.trailing_stop_distance
+                }
+            }
+        else:
+            return {"error": "Failed to update trading configuration"}
+            
+    except Exception as e:
+        return {"error": str(e)}
+
+@app.post("/api/execution/switch-mode")
+async def switch_trading_mode(mode: str = Body(..., embed=True)):
+    """Switch between trading modes (simulation, real_trading, hybrid, sandbox, backtest)."""
+    try:
+        from common.config_manager import config_manager, TradingMode
+        
+        # Validate mode
+        try:
+            trading_mode = TradingMode(mode)
+        except ValueError:
+            return {"error": f"Invalid trading mode: {mode}. Valid modes: {[m.value for m in TradingMode]}"}
+        
+        # Update trading mode
+        success = await config_manager.update_trading_config({"trading_mode": mode})
+        
+        if success:
+            # Reload configuration
+            new_config = await config_manager.load_trading_config()
+            
+            return {
+                "success": True,
+                "message": f"Trading mode switched to {mode}",
+                "config": {
+                    "mode": new_config.mode.value,
+                    "simulation_balance": new_config.simulation_balance,
+                    "max_simulation_risk": new_config.max_simulation_risk,
+                    "real_trading_enabled": new_config.real_trading_enabled,
+                    "simulation_accounts": new_config.simulation_accounts,
+                    "real_accounts": new_config.real_accounts,
+                    "safety_checks_enabled": new_config.safety_checks_enabled,
+                    "max_position_size": new_config.max_position_size,
+                    "emergency_stop_enabled": new_config.emergency_stop_enabled
+                }
+            }
+        else:
+            return {"error": "Failed to update trading mode"}
+            
+    except Exception as e:
+        return {"error": str(e)}
+
+
+class AgenticExecutionService:
+    """Service wrapper for the agentic execution agent."""
+    
+    def __init__(self):
+        self.agent = None
+        self.running = False
+        
+    async def start(self):
+        """Start the agentic execution service."""
+        try:
+            logger.info("Starting Agentic Execution Service...")
+            
+            # Initialize the agentic execution agent
+            self.agent = AgenticExecutionAgent(llm_config=None)  # Will use default config
+            await self.agent.initialize_infrastructure()
+            
+            # Initialize websocket connections and other components
+            logger.info("Initializing agent websocket connections...")
+            await self.agent.initialize()
+            logger.info("Agent websocket connections initialized successfully")
+            
+            self.running = True
+            logger.info("Agentic Execution Service started successfully")
+                
+        except Exception as e:
+            logger.error(f"Failed to start Agentic Execution Service: {e}")
+            raise
+    
+    async def stop(self):
+        """Stop the agentic execution service."""
+        try:
+            logger.info("Stopping Agentic Execution Service...")
+            self.running = False
+            
+            if self.agent:
+                # Cleanup if needed
+                pass
+            
+            logger.info("Agentic Execution Service stopped successfully")
+            
+        except Exception as e:
+            logger.error(f"Error stopping Agentic Execution Service: {e}")
+
+def main():
+    """Main function to run the agentic execution service."""
+    # Run the FastAPI server
+    uvicorn.run(app, host="0.0.0.0", port=8002, log_level="info")
 
 if __name__ == "__main__":
-    uvicorn.run(app, host="0.0.0.0", port=8002)
+    # Run the main function
+    main()

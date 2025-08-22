@@ -71,10 +71,18 @@ class DatabaseClient:
         username = os.getenv('DB_USER', 'volex')
         password = os.getenv('DB_PASSWORD', 'volex_pass')
         
-        # Force host to be 'db' for Docker containers
-        if host == 'localhost' or host == '127.0.0.1':
+        # Check if we're running locally or in Docker
+        is_docker = os.path.exists('/.dockerenv') or os.getenv('DOCKER_ENV') == 'true'
+        
+        # Use appropriate host based on environment
+        if not is_docker and (host == 'db' or host == 'localhost' or host == '127.0.0.1'):
+            # Running locally, use localhost
+            host = 'localhost'
+            logger.info("Running locally - using localhost for database connection")
+        elif is_docker and (host == 'localhost' or host == '127.0.0.1'):
+            # Running in Docker, use container name
             host = 'db'
-            logger.warning(f"Detected localhost in DB_HOST, forcing to 'db' for Docker environment")
+            logger.info("Running in Docker - using 'db' container for database connection")
         
         return f"postgresql://{username}:{password}@{host}:{port}/{database}"
     
@@ -179,14 +187,27 @@ class DatabaseClient:
             return False
     
     def execute_query(self, query: str, params: Optional[Dict] = None) -> List[Dict]:
-        """Execute a raw SQL query."""
+        """Execute a raw SQL query that returns rows (SELECT)."""
         try:
             with self.engine.connect() as conn:
                 result = conn.execute(text(query), params or {})
-                return [dict(row) for row in result]
+                # Convert SQLAlchemy Row objects to dictionaries
+                columns = result.keys()
+                return [dict(zip(columns, row)) for row in result.fetchall()]
         except Exception as e:
             logger.error(f"Query execution failed: {e}")
             raise
+    
+    def execute_non_query(self, query: str, params: Optional[Dict] = None) -> bool:
+        """Execute a raw SQL statement that doesn't return rows (INSERT, UPDATE, DELETE)."""
+        try:
+            with self.engine.connect() as conn:
+                conn.execute(text(query), params or {})
+                conn.commit()
+                return True
+        except Exception as e:
+            logger.error(f"Non-query execution failed: {e}")
+            return False
     
     def get_database_info(self) -> Dict[str, Any]:
         """Get database information and statistics."""
@@ -274,6 +295,20 @@ def execute_query(query: str, params: Optional[Dict] = None) -> List[Dict]:
         List of result dictionaries
     """
     return get_db_client().execute_query(query, params)
+
+
+def execute_non_query(query: str, params: Optional[Dict] = None) -> bool:
+    """
+    Execute a raw SQL statement using the global client.
+    
+    Args:
+        query: SQL statement string
+        params: Statement parameters
+        
+    Returns:
+        True if successful, False otherwise
+    """
+    return get_db_client().execute_non_query(query, params)
 
 
 def get_database_info() -> Dict[str, Any]:
