@@ -49,8 +49,8 @@ This document provides comprehensive information about the VolexSwarm system, in
 #### Binance US (`secret/api_keys/binance`)
 ```json
 {
-  "api_key": "7o5IfNVEHeCdAr9vdfxLfOh7p1m1OOR0PtounlCWed9mmyDrTS0pOwjgF7N41hOP",
-  "secret_key": "i3VTLrTYiguauX42hUhd9JyMBGzEXKjYw408hXXbvbbZad8CIDzE9pnPxd7Exw3J"
+  "api_key": "YOUR_BINANCE_US_API_KEY_HERE",
+  "secret_key": "YOUR_BINANCE_US_SECRET_KEY_HERE"
 }
 ```
 
